@@ -18,5 +18,5 @@ copyright = "UAFix Player"
 
 [tool.flet.app]
 path = "."
-exclude = ["run.log", "run2.log", "README.md", ".github"]
+exclude = ["run.log", "run2.log", "README.md", ".github", "icon_options", "dist"]
 # дозвіл на інтернет (android.permission.INTERNET) і мережевий доступ macOS Flet додає сам

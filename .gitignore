@@ -6,3 +6,4 @@ __pycache__/
 build/
 dist/
 run*.log
+uafix_tv_flag.py
