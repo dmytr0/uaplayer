@@ -1,4 +1,14 @@
 """UAFix Player — кросплатформений клієнт (Windows / macOS / Android) на Flet."""
+import locale
+
+# У зібраному застосунку Python працює в одному процесі з плеєром (libmpv), а mpv не
+# підтримує нестандартну числову локаль (напр. uk_UA з десятковою комою): створення
+# плеєра падає з assertion при першому ж відео. Тому числова локаль — завжди «C».
+try:
+    locale.setlocale(locale.LC_NUMERIC, "C")
+except locale.Error:
+    pass
+
 import asyncio
 import re
 import time
@@ -96,6 +106,10 @@ def main(page: ft.Page):
 
     def error_icon(msg):
         return ft.Icons.WIFI_OFF_ROUNDED if "інтернет" in msg else ft.Icons.ERROR_OUTLINE_ROUNDED
+
+    def safe(control):
+        """На телефоні — відступи від системних рядків (годинник, батарея, жести)."""
+        return ft.SafeArea(control, expand=True) if is_mobile else control
 
     def drag_area(content):
         return content if is_mobile else ft.WindowDragArea(content, maximizable=True)
@@ -474,12 +488,8 @@ def main(page: ft.Page):
         more_loader.update()
         try:
             items = await fetch_page(st["page"] + 1)
-        except Exception as ex:
-            items = None
-            if time.monotonic() - st.get("more_error_at", 0) > 15:  # не спамимо при прокрутці
-                st["more_error_at"] = time.monotonic()
-                msg = await explain(ex, "наступну сторінку")
-                toast(msg, error_icon(msg), retry=lambda: page.run_task(load_more))
+        except Exception:
+            items = None  # без повідомлення: наступна прокрутка спробує ще раз
         if gen != st["gen"]:
             return
         st["loading"] = False
@@ -762,7 +772,7 @@ def main(page: ft.Page):
 
     home = ft.View(
         route="/", padding=0, bgcolor=BG, drawer=drawer,
-        controls=[ft.Column([top_bar_box, body], expand=True, spacing=0)],
+        controls=[safe(ft.Column([top_bar_box, body], expand=True, spacing=0))],
     )
 
     # ═════════════════════ сторінка тайтлу ═════════════════════
@@ -922,7 +932,7 @@ def main(page: ft.Page):
         title_bar = drag_area(bar)
         view = ft.View(
             route="/title", padding=0, bgcolor=BG,
-            controls=[ft.Column([title_bar, scroller], expand=True, spacing=0)],
+            controls=[safe(ft.Column([title_bar, scroller], expand=True, spacing=0))],
         )
         page.views.append(view)
         page.update()
@@ -981,13 +991,14 @@ def main(page: ft.Page):
             else:
                 ep_status.value = "Завантажую список серій…"
                 page.update()
-                episodes = await asyncio.to_thread(core.list_episodes, item["url"], html)
-                seasons = core.group_episode_pages(episodes)
+                episodes, locked = await asyncio.to_thread(core.list_episodes, item["url"], html)
+                seasons = core.group_episode_pages(episodes, locked)
         except Exception as ex:
             seasons, err = [], ex
         if view not in page.views:
             return  # користувач уже пішов з екрана
         ctx["seasons"] = seasons
+        ctx["season"] = next((i for i, x in enumerate(seasons) if x["episodes"]), 0)
         ep_progress.visible = False
         if not seasons:
             ep_status.value = (await explain(err, "серії")) if err else ""
@@ -1026,7 +1037,9 @@ def main(page: ft.Page):
         return ep["sources"]
 
     async def detect_voices(ctx):
-        ep = ctx["seasons"][0]["episodes"][0]
+        ep = next((e for x in ctx["seasons"] for e in x["episodes"]), None)
+        if ep is None:
+            return
         try:
             await ensure_sources(ep)
         except Exception:
@@ -1097,17 +1110,27 @@ def main(page: ft.Page):
 
         ctx["seasons_row"].controls = [] if len(seasons) == 1 else [
             ft.Container(
-                ft.Text(s["name"], size=13, weight=ft.FontWeight.W_700,
-                        color="#FFFFFF" if i == current else MUTED),
+                ft.Row([ft.Text(s["name"], size=13, weight=ft.FontWeight.W_700,
+                                color="#FFFFFF" if i == current else MUTED)]
+                       + ([ft.Icon(ft.Icons.LOCK_OUTLINE_ROUNDED, size=13,
+                                   color="#FFFFFF" if i == current else MUTED)]
+                          if s.get("locked") else []), spacing=5, tight=True),
                 padding=ft.Padding.symmetric(horizontal=16, vertical=9), border_radius=20,
                 gradient=ui.ACCENT_GRADIENT if i == current else None,
                 bgcolor=None if i == current else SURFACE_2,
                 border=ft.Border.all(1, BORDER), animate=ui.FAST,
                 on_click=lambda e, i=i: select(i),
             ) for i, s in enumerate(seasons)]
-        ctx["episodes_box"].content = ft.Column(
-            [episode_row(ctx, current, ei, ep) for ei, ep in enumerate(seasons[current]["episodes"])],
-            spacing=8, key=f"season{current}")
+        if seasons[current].get("locked"):
+            ctx["episodes_box"].content = ft.Container(empty_state(
+                ft.Icons.LOCK_OUTLINE_ROUNDED, "Серії недоступні",
+                "Сайт показує серії цього сезону лише зареєстрованим користувачам"),
+                key=f"season{current}", height=260)
+        else:
+            ctx["episodes_box"].content = ft.Column(
+                [episode_row(ctx, current, ei, ep)
+                 for ei, ep in enumerate(seasons[current]["episodes"])],
+                spacing=8, key=f"season{current}")
 
     def episode_row(ctx, si, ei, ep):
         num_text = ft.Text(str(ep["num"]) if ep["num"] is not None else "▶", size=13,
@@ -1178,8 +1201,8 @@ def main(page: ft.Page):
                 everything.append((prefix + e["label"], e))
         show = (ctx["info"] or {}).get("title") or ctx["item"]["title"]
         view = ft.View(route="/play", padding=0, bgcolor="#000000")
-        view.controls = [build_player(view, ctx, show, everything[start:], ctx.get("voice", ""),
-                                      before=everything[:start])]
+        view.controls = [safe(build_player(view, ctx, show, everything[start:], ctx.get("voice", ""),
+                                      before=everything[:start]))]
         page.views.append(view)
         page.update()
 
@@ -1221,13 +1244,19 @@ def main(page: ft.Page):
         )
 
         async def on_error(e):
-            # при обриві мережі плеєр шле кілька помилок поспіль — показуємо одну
-            if time.monotonic() - p.get("error_at", 0) < 10:
+            # Плеєр інколи повідомляє про короткочасні збої потоку, які сам і переживає,
+            # тож повідомлень не показуємо. Якщо ж відтворення справді зупинилось —
+            # тихо перевідкриваємо поточну серію з того ж місця (не частіше разу на 30 с).
+            if time.monotonic() - p.get("error_at", 0) < 30:
                 return
             p["error_at"] = time.monotonic()
-            msg = await explain(e.data, "відео")
-            cur = entries[p["idx"]].get("voice") or p["voice"]
-            toast(msg, error_icon(msg), retry=lambda: page.run_task(switch_voice, cur))
+            await asyncio.sleep(4)
+            try:
+                if not alive() or await video.is_playing():
+                    return
+            except Exception:
+                return
+            await switch_voice(entries[p["idx"]].get("voice") or p["voice"])
 
         video.on_error = on_error
 
@@ -1375,7 +1404,7 @@ def main(page: ft.Page):
             fill_menus()
             prev_slot.content = prev_btn if (p["idx"] > 0 or before) else None
             next_slot.content = next_btn if p["idx"] < len(queue) - 1 else None
-            voice_slot.content = voice_menu if len(voices) > 1 else None
+            voice_slot.content = voice_menu if voices else None
             sub_slot.content = sub_menu if entries[p["idx"]].get("subs") else None
 
         style = dict(seek_bar_position_color=ACCENT, seek_bar_thumb_color=ACCENT,
@@ -1481,6 +1510,11 @@ def main(page: ft.Page):
             st["fullscreen"] = on
             if not on:
                 st["fullscreen_exit"] = time.monotonic()
+            if is_mobile:
+                # більшість фільмів закодовано в кадр 16:9 з чорними смугами, а екран телефона
+                # ширший — на весь екран заповнюємо ширину (краї кадру трохи обрізаються)
+                video.fit = ft.BoxFit.COVER if on else ft.BoxFit.CONTAIN
+                video.update()
 
         video.on_enter_fullscreen = lambda e: fullscreen(True)
         video.on_exit_fullscreen = lambda e: fullscreen(False)

@@ -485,7 +485,9 @@ def page_streams(url, html):
 
 def list_episodes(url, html, workers=4):
     """Список серій без завантаження відео: з головної сторінки та сторінок усіх сезонів
-    (головна показує лише останні ~20 серій). → [{season, num, name, page}] за порядком."""
+    (головна показує лише останні ~20 серій).
+    → ([{season, num, name, page}] за порядком, {номери сезонів без доступних серій})
+    Сезони без серій — це ті, що сайт показує лише зареєстрованим користувачам."""
     base_path = urlparse(url).path.rstrip("/")
     episodes = {}   # page_url -> {season, num, name}
     seasons = set()
@@ -524,10 +526,16 @@ def list_episodes(url, html, workers=4):
             for season_url, season_html in pool.map(load, sorted(seasons)):
                 if season_html:
                     collect(season_html, season_url)
-    return sorted(episodes.values(), key=lambda e: (e["season"], e["num"]))
+    found = {e["season"] for e in episodes.values()}
+    locked = set()
+    for season_url in seasons:
+        m = SEASON_PATH_RE.search(urlparse(season_url).path)
+        if m and int(m.group(1)) not in found:
+            locked.add(int(m.group(1)))
+    return sorted(episodes.values(), key=lambda e: (e["season"], e["num"])), locked
 
 
-def group_episode_pages(episodes):
+def group_episode_pages(episodes, locked=()):
     """[{season, num, name, page}] → структура як у group_streams, але sources=None
     (потоки серії завантажуються, коли її вмикають)."""
     seasons = {}
@@ -535,7 +543,10 @@ def group_episode_pages(episodes):
         seasons.setdefault(e["season"], []).append({
             "num": e["num"], "name": e["name"], "label": episode_label(e["num"], e["name"]),
             "sources": None, "page": e["page"]})
-    return [{"name": f"Сезон {n}", "episodes": eps} for n, eps in sorted(seasons.items())]
+    for n in locked:
+        seasons.setdefault(n, [])
+    return [{"name": f"Сезон {n}", "episodes": eps, "locked": not eps}
+            for n, eps in sorted(seasons.items())]
 
 
 def episode_sources(page_url):
@@ -567,6 +578,8 @@ def friendly_error(err, what="дані"):
     m = re.search(r"http (\d{3})", text)
     if m:
         code = int(m.group(1))
+        if code == 403:
+            return "Сайт показує це лише зареєстрованим користувачам"
         if code == 404:
             return f"Не вдалося знайти {what} на сайті — можливо, сторінку прибрали"
         return "Сайт тимчасово недоступний. Спробуйте пізніше"
