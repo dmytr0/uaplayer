@@ -6,6 +6,10 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+env:
+  PYTHONUTF8: "1"            # кирилиця у виводі flet build на Windows
+  PYTHONIOENCODING: utf-8
+
 jobs:
   build:
     name: ${{ matrix.name }}
@@ -17,19 +21,16 @@ jobs:
           - name: macOS
             os: macos-latest
             target: macos
-            output: build/macos
+            artifact: UAFix-Player-macOS
           - name: Windows
             os: windows-latest
             target: windows
-            output: build/windows
+            artifact: UAFix-Player-Windows
           - name: Android
             os: ubuntu-latest
             target: apk
-            output: build/apk
-    env:
-      PYTHONUTF8: "1"
-      PYTHONIOENCODING: utf-8
-      FLET_CLI_NO_RICH_OUTPUT: "1"
+            artifact: UAFix-Player-Android
+
     steps:
       - uses: actions/checkout@v4
 
@@ -47,18 +48,34 @@ jobs:
       - name: Install Flet CLI
         run: pip install "flet[cli]==1.0.4"
 
-      # --yes: Flutter SDK (і Android SDK для apk) встановлюються без запитань
       - name: flet build ${{ matrix.target }}
-        run: flet build ${{ matrix.target }} --yes --verbose
+        run: flet build ${{ matrix.target }} --yes --verbose --no-rich-output --build-number ${{ github.run_number }}
+
+      - name: Pack macOS app
+        if: matrix.target == 'macos'
+        run: |
+          cd build/macos
+          ditto -c -k --sequesterRsrc --keepParent "$(ls -d *.app | head -1)" ../../UAFix-Player-macOS.zip
+
+      - name: Pack Windows app
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: Compress-Archive -Path build/windows/* -DestinationPath UAFix-Player-Windows.zip
+
+      - name: Pack Android apk
+        if: matrix.target == 'apk'
+        run: cp "$(ls build/apk/*.apk | head -1)" UAFix-Player-Android.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: UAFix-Player-${{ matrix.name }}
-          path: ${{ matrix.output }}
+          name: ${{ matrix.artifact }}
+          path: |
+            UAFix-Player-*.zip
+            UAFix-Player-*.apk
           if-no-files-found: error
 
   release:
-    name: Release
+    name: GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
@@ -67,12 +84,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          path: artifacts
-      - name: Pack
-        run: |
-          cd artifacts
-          for d in */; do (cd "$d" && zip -qr "../${d%/}.zip" .); done
-          ls -la
+          path: dist
+          merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*.zip
+          files: dist/*

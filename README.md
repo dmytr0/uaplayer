@@ -22,21 +22,27 @@ python3 -m venv .venv
 
 ## Збірка
 
-Збірки для **macOS, Windows і Android** робить GitHub Actions (`.github/workflows/build.yml`)
-при кожному push у `main`; готові файли — в артефактах запуску (вкладка *Actions*).
-Тег `v*` (наприклад `v1.0.0`) додатково створює реліз із zip-архівами.
+Збирає GitHub Actions ([.github/workflows/build.yml](.github/workflows/build.yml)) — для кожного
+push у `main`, вручну (Actions → Build → Run workflow) або при тезі `v*`:
 
-Локально (потрібні Xcode для macOS / Visual Studio для Windows; Flutter і Android SDK
-`flet build` встановить сам):
+| Платформа | Runner | Результат (artifact) |
+|---|---|---|
+| macOS | `macos-latest` (Xcode) | `UAFix-Player-macOS.zip` → `UAFix Player.app` |
+| Windows | `windows-latest` (Visual Studio) | `UAFix-Player-Windows.zip` → `.exe` з бібліотеками |
+| Android | `ubuntu-latest` (Android SDK, JDK 17) | `UAFix-Player-Android.apk` |
+
+Тег `v1.0.0` (`git tag v1.0.0 && git push --tags`) додатково створює GitHub Release з усіма трьома файлами.
+
+Локально (потрібен Xcode для macOS, Visual Studio для Windows; Flutter, JDK та Android SDK
+`flet build` поставить сам з `--yes`):
 
 ```bash
 flet build macos --yes
-flet build windows --yes
 flet build apk --yes
 ```
 
-macOS-збірка не підписана: перший запуск — правий клік → «Відкрити», або
-`xattr -dr com.apple.quarantine "UAFix Player.app"`.
+Збірки не підписані: на macOS перший запуск — правий клік на застосунку → «Відкрити»;
+на Android — дозволити встановлення з невідомих джерел.
 
 ## Відомі обмеження
 
