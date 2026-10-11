@@ -10,6 +10,7 @@ except locale.Error:
     pass
 
 import asyncio
+import json
 import os
 import re
 import time
@@ -149,14 +150,81 @@ def main(page: ft.Page):
     prefs = ft.SharedPreferences()
     settings = {"sub_scale": 1.0, "fit": "auto"}  # fit "auto": на телефоні в повному екрані — «Заповнити»
 
+    # Історія переглядів: [{url, title, orig, poster, age, season, label, si, ei, voice,
+    # pos, dur, ts}] — найновіше першим. Позиція (pos) і тривалість (dur) — у мілісекундах.
+    history = []
+    HISTORY_MAX = 40
+
     async def load_settings():
         try:
             for key in settings:
                 value = await prefs.get(key)
                 if value is not None:
                     settings[key] = value
+            raw = await prefs.get("history")
+            if raw:
+                history[:] = json.loads(raw)
         except Exception:
             pass
+        render_continue()
+
+    def save_history():
+        page.run_task(prefs.set, "history", json.dumps(history[:HISTORY_MAX], ensure_ascii=False))
+
+    def history_entry(url):
+        return next((h for h in history if h["url"] == url), None)
+
+    def fmt_time(ms):
+        sec = int(ms // 1000)
+        h, m, s_ = sec // 3600, sec % 3600 // 60, sec % 60
+        return f"{h}:{m:02d}:{s_:02d}" if h else f"{m}:{s_:02d}"
+
+    def resume_caption(h):
+        parts = []
+        if h.get("season"):
+            parts.append(h["season"].replace("Сезон ", "С"))
+        if h.get("label") and h["label"] != "Фільм":
+            parts.append(h["label"].split(" — ")[0])
+        parts.append(fmt_time(h["pos"]))
+        return " · ".join(parts)
+
+    def watched(h):
+        return h.get("dur") and h["pos"] >= 0.95 * h["dur"]
+
+    def record_progress(ctx, ep, voice, pos_ms, dur_ms):
+        """Зберігає, на якій серії й хвилині зупинились (викликається з плеєра)."""
+        si = ei = None
+        for i, season in enumerate(ctx["seasons"]):
+            for j, e in enumerate(season["episodes"]):
+                if e is ep:
+                    si, ei = i, j
+        if si is None:
+            return
+        item, info = ctx["item"], ctx["info"] or {}
+        multi = len(ctx["seasons"]) > 1
+        entry = {
+            "url": item["url"], "title": info.get("title") or item["title"],
+            "orig": item.get("orig") or info.get("orig") or "",
+            "poster": item.get("poster") or info.get("poster") or "", "age": item.get("age") or "",
+            "season": ctx["seasons"][si]["name"] if multi else "", "label": ep["label"],
+            "si": si, "ei": ei, "voice": voice, "pos": int(pos_ms), "dur": int(dur_ms),
+            "ts": int(time.time()),
+        }
+        history[:] = [entry] + [h for h in history if h["url"] != item["url"]]
+        save_history()
+
+    def find_episode(ctx, h):
+        """(сезон, серія) запису історії в поточному списку серій тайтлу."""
+        for i, season in enumerate(ctx["seasons"]):
+            if h.get("season") and season["name"] != h["season"]:
+                continue
+            for j, e in enumerate(season["episodes"]):
+                if e["label"] == h.get("label"):
+                    return i, j
+        si, ei = h.get("si", 0), h.get("ei", 0)
+        if si < len(ctx["seasons"]) and ei < len(ctx["seasons"][si]["episodes"]):
+            return si, ei
+        return None
 
     def save_setting(key, value):
         settings[key] = value
@@ -350,7 +418,7 @@ def main(page: ft.Page):
     ))
 
     # ═════════════════════ картки ═════════════════════
-    def grid_card(item):
+    def grid_card(item, progress=None, caption=None, on_open=None):
         play = ft.Container(
             ft.Icon(ft.Icons.PLAY_ARROW_ROUNDED, color="#FFFFFF", size=30),
             width=56, height=56, border_radius=28, gradient=ui.ACCENT_GRADIENT,
@@ -370,13 +438,19 @@ def main(page: ft.Page):
                 ft.Column([
                     ft.Text(item["title"], size=15, weight=ft.FontWeight.W_700, color="#FFFFFF",
                             max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                    ft.Text(item["orig"] or " ", size=11, color="#C8CCD4", max_lines=1,
+                    ft.Text(caption or item["orig"] or " ", size=11,
+                            color=ui.ACCENT_2 if caption else "#C8CCD4", max_lines=1,
                             overflow=ft.TextOverflow.ELLIPSIS),
                 ], spacing=2, tight=True),
-                left=12, right=12, bottom=12,
+                left=12, right=12, bottom=16 if progress is not None else 12,
             ),
             ft.Container(play, left=0, right=0, top=0, bottom=0, alignment=ft.Alignment.CENTER),
         ]
+        if progress is not None:  # смужка «скільки переглянуто»
+            layers.append(ft.Container(
+                ft.ProgressBar(value=max(0.02, min(progress, 1)), color=ACCENT,
+                               bgcolor="#55FFFFFF", bar_height=4, border_radius=2),
+                left=12, right=12, bottom=8))
         if item["age"]:
             layers.append(ft.Container(
                 ft.Text(item["age"], size=10, weight=ft.FontWeight.W_700, color="#FFFFFF"),
@@ -391,7 +465,7 @@ def main(page: ft.Page):
             shadow=ft.BoxShadow(blur_radius=18, offset=ft.Offset(0, 8),
                                 color=ft.Colors.with_opacity(0.35, "#000000")),
             scale=1, animate_scale=ui.MED, animate=ui.MED,
-            on_click=lambda e: page.run_task(open_title, item),
+            on_click=lambda e: on_open() if on_open else page.run_task(open_title, item),
         )
 
         def highlight(h):
@@ -408,7 +482,8 @@ def main(page: ft.Page):
         if TV:
             card.on_click = None
             card.width, card.height = TV_CARD_W, TV_CARD_W / POSTER_RATIO
-            return ui.appear(focusable(card, lambda e: page.run_task(open_title, item), highlight))
+            return ui.appear(focusable(
+                card, lambda e: on_open() if on_open else page.run_task(open_title, item), highlight))
         card.on_hover = lambda e: highlight(ui.hovered(e))
         return ui.appear(card)
 
@@ -850,8 +925,46 @@ def main(page: ft.Page):
         return column, load
 
     shelves = [shelf(n, pth) for n, pth in SHELVES]
+
+    continue_row = ft.ListView(horizontal=True, spacing=16, height=shelf_card_w / POSTER_RATIO + 28,
+                               padding=ft.Padding.symmetric(horizontal=side, vertical=14))
+
+    def clear_history(e=None):
+        history.clear()
+        save_history()
+        render_continue()
+        toast("Історію переглядів очищено", ft.Icons.CHECK_CIRCLE_ROUNDED)
+
+    continue_section = ft.Column([
+        ft.Container(ft.Row([
+            ft.Text("Продовжити перегляд", size=20 if is_mobile else 22,
+                    weight=ft.FontWeight.W_800, color=TEXT),
+            ft.Container(expand=True),
+            ft.TextButton("Очистити", icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
+                          style=ft.ButtonStyle(color=MUTED, icon_color=MUTED), on_click=clear_history),
+        ]), padding=ft.Padding.symmetric(horizontal=side)),
+        continue_row,
+    ], spacing=0, visible=False)
+
+    def render_continue():
+        items = [h for h in history if not watched(h)][:15]
+        continue_section.visible = bool(items)
+        cards = []
+        for h in items:
+            item = {k: h.get(k, "") for k in ("url", "title", "orig", "poster", "age")}
+            c = grid_card(item, progress=h["pos"] / h["dur"] if h.get("dur") else 0,
+                          caption=resume_caption(h),
+                          on_open=lambda item=item: page.run_task(open_title, item, False, True))
+            ui.reveal(c)
+            cards.append(ft.Container(c, width=shelf_card_w))
+        continue_row.controls = cards
+        try:
+            continue_section.update()
+        except Exception:
+            pass  # головна ще не на екрані
+
     home_content = ft.ListView(
-        [banner, *[col for col, _ in shelves], ft.Container(height=40)],
+        [banner, continue_section, *[col for col, _ in shelves], ft.Container(height=40)],
         expand=True, spacing=18, padding=0, key="home")
 
     async def load_home():
@@ -898,7 +1011,7 @@ def main(page: ft.Page):
     )
 
     # ═════════════════════ сторінка тайтлу ═════════════════════
-    async def open_title(item, autoplay=False):
+    async def open_title(item, autoplay=False, resume=False):
         ctx = {"item": item, "info": None, "seasons": [], "season": 0}
 
         def backdrop_image(src):
@@ -970,6 +1083,36 @@ def main(page: ft.Page):
                   ft.ControlState.DEFAULT: ft.BorderSide(1, BORDER)}, shape=ft.RoundedRectangleBorder(radius=12),
             padding=ft.Padding.symmetric(horizontal=18, vertical=18),
         )
+        resume_btn = ft.FilledButton(
+            "Продовжити", icon=ft.Icons.REPLAY_ROUNDED, visible=False,
+            style=ft.ButtonStyle(
+                bgcolor={ft.ControlState.HOVERED: "#FFFFFF", ft.ControlState.DEFAULT: "#ECECEC"},
+                color="#0D0E12", icon_color="#0D0E12", shape=ft.RoundedRectangleBorder(radius=12),
+                padding=ft.Padding.symmetric(horizontal=22, vertical=18),
+                text_style=ft.TextStyle(size=15, weight=ft.FontWeight.W_700),
+                side={ft.ControlState.FOCUSED: ft.BorderSide(3, ACCENT),
+                      ft.ControlState.DEFAULT: ft.BorderSide(0, ft.Colors.TRANSPARENT)}))
+
+        def update_resume():
+            """Кнопка «Продовжити · С1 · Серія 3 · 23:14», якщо тайтл уже почали дивитись."""
+            h = history_entry(item["url"])
+            spot = find_episode(ctx, h) if (h and ctx["seasons"] and not watched(h)) else None
+            resume_btn.visible = spot is not None
+            if spot:
+                resume_btn.content = f"Продовжити · {resume_caption(h)}"
+                resume_btn.on_click = lambda e: page.run_task(resume_watching)
+            return spot
+
+        async def resume_watching():
+            h = history_entry(item["url"])
+            spot = find_episode(ctx, h) if h else None
+            if not spot:
+                await play_episode(ctx, ctx["season"], 0)
+                return
+            if h.get("voice") in ctx["voices"]:
+                ctx["voice"] = h["voice"]
+            await play_episode(ctx, *spot, start_ms=h["pos"])
+
         trailer_btn = ft.OutlinedButton("Трейлер", icon=ft.Icons.SMART_DISPLAY_ROUNDED,
                                         style=secondary, visible=False)
         m3u_btn = ft.OutlinedButton(".m3u", icon=ft.Icons.DOWNLOAD_ROUNDED, style=secondary,
@@ -997,7 +1140,7 @@ def main(page: ft.Page):
             description, more_btn,
             ft.Container(height=8),
             voice_box,
-            ft.Row([play_btn, trailer_btn, m3u_btn, site_btn], spacing=10, wrap=True),
+            ft.Row([resume_btn, play_btn, trailer_btn, m3u_btn, site_btn], spacing=10, wrap=True),
             ft.Container(height=4),
             cast,
         ], spacing=6), padding=ft.Padding.only(top=8)))
@@ -1143,8 +1286,11 @@ def main(page: ft.Page):
         total = sum(len(s["episodes"]) for s in seasons)
         ep_status.value = f"{total} {plural(total, 'серія', 'серії', 'серій')}"
         play_btn.disabled = m3u_btn.disabled = False
+        has_resume = update_resume() is not None
+        # після виходу з плеєра кнопку «Продовжити» оновлюємо (нова хвилина)
+        view.data = {"refresh": lambda: (update_resume(), page.update())}
         if TV:  # autofocus не спрацьовує на вимкненій кнопці — фокус ставимо, щойно ввімкнули
-            page.run_task(focus_later, play_btn)
+            page.run_task(focus_later, resume_btn if has_resume else play_btn)
         episodes_section.visible = total > 1  # для фільму вистачає кнопки «Дивитись»
         ctx["voices"] = all_voices(seasons)
         ctx["voice"] = ctx["voices"][0] if ctx["voices"] else ""
@@ -1154,7 +1300,9 @@ def main(page: ft.Page):
         if not ctx["voices"]:
             # серії ще без потоків — дізнаємось набір озвучок з першої серії
             page.run_task(detect_voices, ctx)
-        if autoplay:  # «Дивитись» з банера — одразу вмикаємо
+        if resume:  # картка з «Продовжити перегляд» — одразу з тієї ж хвилини
+            page.run_task(resume_watching)
+        elif autoplay:  # «Дивитись» з банера — одразу вмикаємо
             page.run_task(play_episode, ctx, ctx["season"], 0)
 
     async def focus_later(control):
@@ -1339,7 +1487,7 @@ def main(page: ft.Page):
         return row
 
     # ═════════════════════ плеєр ═════════════════════
-    async def play_episode(ctx, si, ei):
+    async def play_episode(ctx, si, ei, start_ms=None):
         if not ctx["seasons"]:
             toast("Серії ще завантажуються…", ft.Icons.HOURGLASS_TOP_ROUNDED)
             return
@@ -1368,8 +1516,9 @@ def main(page: ft.Page):
                 everything.append((prefix + e["label"], e))
         show = (ctx["info"] or {}).get("title") or ctx["item"]["title"]
         view = ft.View(route="/play", padding=0, bgcolor="#000000")
+        start_pos = ft.Duration(milliseconds=int(start_ms)) if start_ms else None
         view.controls = [safe(build_player(view, ctx, show, everything[start:], ctx.get("voice", ""),
-                                      before=everything[:start]))]
+                                      start_pos=start_pos, before=everything[:start]))]
         page.views.append(view)
         page.update()
 
@@ -1741,7 +1890,8 @@ def main(page: ft.Page):
             )
             video.controls = fv.AdaptiveVideoControls(
                 material=fv.MaterialVideoControls(**mobile_style) if is_mobile else None,
-                material_desktop=None if is_mobile else fv.MaterialDesktopVideoControls(**style))
+                material_desktop=None if is_mobile else fv.MaterialDesktopVideoControls(
+                    **style, hide_mouse_on_controls_removal=True))
 
         def alive():
             try:
@@ -1798,12 +1948,12 @@ def main(page: ft.Page):
                 page.update()
 
         async def restore_position():
-            """Після зміни озвучки — перемотати на ту ж позицію. Перемотка, зроблена до того,
-            як HLS-потік реально почав грати, ігнорується плеєром, тому чекаємо на відтворення
-            й перевіряємо результат, повторюючи за потреби."""
+            """Перемотати на збережену позицію (зміна озвучки, «Продовжити перегляд»).
+            Перемотка, зроблена до того, як HLS-потік реально почав грати, ігнорується
+            плеєром, тому чекаємо на відтворення й перевіряємо результат, повторюючи за потреби."""
             start = p["target"]
             target = start.in_milliseconds
-            for _ in range(80):  # до ~20 с на відкриття потоку
+            for _ in range(360):  # до ~90 с: на повільній мережі потік стартує 30–40 с
                 await asyncio.sleep(0.25)
                 if not alive():
                     return  # плеєр уже закрили
@@ -1854,6 +2004,29 @@ def main(page: ft.Page):
             padding=ft.Padding.only(left=14 + traffic_gap, right=14, top=8, bottom=8),
             bgcolor="#000000",
         ))
+        async def save_progress():
+            if p["restoring"]:
+                return  # позиція ще не відновлена — не перезаписуємо збережену нулем
+            try:
+                pos = await video.get_current_position()
+                dur = await video.get_duration()
+            except Exception:
+                return
+            if not pos or not dur or dur.in_milliseconds <= 0 or pos.in_milliseconds < 5000:
+                return
+            _, ep = queue[p["idx"]]
+            record_progress(ctx, ep, entries[p["idx"]].get("voice") or p["voice"],
+                            pos.in_milliseconds, dur.in_milliseconds)
+
+        async def track_progress():
+            while True:
+                await asyncio.sleep(10)
+                if not alive():
+                    return
+                await save_progress()
+
+        st["save_progress"] = save_progress
+        page.run_task(track_progress)
         if start_pos and start_pos.in_milliseconds > 3000:
             page.run_task(restore_position)
         if len(entries) < len(queue):
@@ -1897,9 +2070,30 @@ def main(page: ft.Page):
 
     # ═════════════════════ навігація ═════════════════════
     def go_back():
-        if len(page.views) > 1:
-            page.views.pop()
-            page.update()
+        if len(page.views) <= 1:
+            return
+        if page.views[-1].route == "/play" and st.get("save_progress"):
+            page.run_task(leave_player)  # спершу зберегти, на якій хвилині зупинились
+            return
+        pop_view()
+
+    async def leave_player():
+        save, st["save_progress"] = st.get("save_progress"), None
+        try:
+            await asyncio.wait_for(save(), 2)
+        except Exception:
+            pass
+        pop_view()
+
+    def pop_view():
+        if len(page.views) <= 1:
+            return
+        page.views.pop()
+        top = page.views[-1]
+        if isinstance(top.data, dict) and top.data.get("refresh"):
+            top.data["refresh"]()
+        render_continue()
+        page.update()
 
     async def on_key(e: ft.KeyboardEvent):
         if TV and page.views and page.views[-1].route == "/play":
