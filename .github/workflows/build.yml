@@ -119,8 +119,16 @@ jobs:
           python tools/android_template.py android_template
           echo 'APK_ARGS=--template android_template/build --split-per-abi --arch arm64-v8a armeabi-v7a' >> "$GITHUB_ENV"
 
+      # друга спроба — на випадок мережевого збою (бувало: пошкоджений завантажений архів Python)
       - name: flet build ${{ matrix.target }}
-        run: flet build ${{ matrix.target }} --yes --verbose --no-rich-output --build-number ${{ github.run_number }} --build-version ${{ env.APP_VERSION }} ${{ env.TV_ARGS }} ${{ env.APK_ARGS }}
+        shell: bash
+        run: |
+          for attempt in 1 2; do
+            flet build ${{ matrix.target }} --yes --verbose --no-rich-output --build-number ${{ github.run_number }} --build-version ${{ env.APP_VERSION }} ${{ env.TV_ARGS }} ${{ env.APK_ARGS }} && exit 0
+            echo "::warning::flet build failed (attempt $attempt), retrying"
+            rm -rf build/flutter/build
+          done
+          exit 1
 
       - name: Pack macOS app
         if: matrix.target == 'macos'
