@@ -67,3 +67,22 @@ def asset_for(release, platform_name, tv=False):
     else:
         return None
     return release["assets"].get(name)
+
+
+def download(url, dest, progress=lambda done, total: None, chunk=256 * 1024):
+    """Завантажує файл (оновлення) у dest через тимчасовий .part; progress(байти, всього)."""
+    import os
+    tmp = dest + ".part"
+    with requests.get(url, headers={"User-Agent": "UAFix-Player"}, stream=True, timeout=30) as r:
+        r.raise_for_status()
+        total = int(r.headers.get("content-length") or 0)
+        done = 0
+        with open(tmp, "wb") as f:
+            for part in r.iter_content(chunk):
+                f.write(part)
+                done += len(part)
+                progress(done, total)
+    if total and done != total:
+        raise IOError(f"завантажено {done} з {total} байт")
+    os.replace(tmp, dest)
+    return dest

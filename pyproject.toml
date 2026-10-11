@@ -1,6 +1,6 @@
 [project]
 name = "uafix-player"
-version = "1.1.2"
+version = "1.1.3"
 description = "Перегляд каталогу uafix.net і відтворення HLS-потоків"
 requires-python = ">=3.10"
 dependencies = [
@@ -24,5 +24,9 @@ exclude = ["run.log", "run2.log", "README.md", ".github", "icon_options", "dist"
 # фон адаптивної іконки — як у самої іконки (інакше Flet підкладає білий і з'являється ореол);
 # сама іконка — assets/icon_android.png на всю площу, зміст у безпечній зоні
 adaptive_icon_background = "#15171C"
+
+[tool.flet.android.permission]
+# встановлення завантаженого застосунком оновлення (системне вікно «Встановити»)
+"android.permission.REQUEST_INSTALL_PACKAGES" = true
 
 # дозвіл на інтернет (android.permission.INTERNET) і мережевий доступ macOS Flet додає сам

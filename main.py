@@ -208,6 +208,12 @@ def main(page: ft.Page):
 
         def update(e):
             page.pop_dialog()
+            if platform_name == "android" and os.environ.get("FLET_APP_STORAGE_CACHE") and \
+                    url != rel["url"]:
+                # Android: завантажуємо самі (у фоні) й одразу відкриваємо вікно встановлення —
+                # завантаження через вбудований браузер на деяких телефонах зависало на 100%
+                page.run_task(download_and_install, url, rel["version"])
+                return
             page.run_task(ft.UrlLauncher().launch_url, url, mode=ft.LaunchMode.EXTERNAL_APPLICATION)
             toast(hint, ft.Icons.DOWNLOAD_ROUNDED)
 
@@ -238,6 +244,79 @@ def main(page: ft.Page):
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, width=dialog_width()),
             ], tight=True, spacing=10),
         ))
+
+    async def launch_installer():
+        # обробляє MainActivity (див. tools/android_template.py): відкриває системне вікно
+        # «Встановити» для cache/update.apk
+        await ft.UrlLauncher().launch_url("uafixupdate://install",
+                                          mode=ft.LaunchMode.EXTERNAL_APPLICATION)
+
+    async def download_and_install(url, version):
+        dest = os.path.join(os.environ["FLET_APP_STORAGE_CACHE"], "update.apk")
+        bar = ft.ProgressBar(value=None, color=ACCENT, bgcolor=SURFACE_2, bar_height=6,
+                             border_radius=3, width=dialog_width())
+        label = ft.Text("Підключаюсь…", color=MUTED, size=13)
+        dlg = ft.AlertDialog(
+            title=ft.Text(f"Завантаження версії {version}", weight=ft.FontWeight.W_800),
+            bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
+            content=ft.Column([label, bar,
+                               ft.Text("Можна сховати це вікно — завантаження триватиме у фоні.",
+                                       color=MUTED, size=12)], tight=True, spacing=12),
+            actions=[ft.TextButton("Сховати", on_click=lambda e: page.pop_dialog(),
+                                   style=ft.ButtonStyle(color=TEXT))],
+        )
+        page.show_dialog(dlg)
+        last = [0.0]
+
+        def progress(done, total):
+            now = time.monotonic()
+            if now - last[0] < 0.3 and done != total:
+                return
+            last[0] = now
+            mb = 1024 * 1024
+            if total:
+                bar.value = done / total
+                label.value = f"{done / mb:.1f} з {total / mb:.1f} МБ · {done * 100 // total}%"
+            else:
+                label.value = f"{done / mb:.1f} МБ"
+            try:
+                dlg.update()
+            except Exception:
+                pass  # вікно сховали — качаємо далі у фоні
+
+        try:
+            await asyncio.to_thread(updater.download, url, dest, progress)
+        except Exception as ex:
+            try:
+                page.pop_dialog()
+            except Exception:
+                pass
+            msg = await explain(ex, "оновлення")
+            toast(msg, error_icon(msg),
+                  retry=lambda: page.run_task(download_and_install, url, version))
+            return
+        try:
+            page.pop_dialog()
+        except Exception:
+            pass
+        # вікно на випадок, якщо Android спершу попросить дозволити встановлення програм:
+        # після дозволу достатньо повернутись і натиснути «Встановити»
+        page.show_dialog(ft.AlertDialog(
+            title=ft.Text(f"Версія {version} завантажена", weight=ft.FontWeight.W_800),
+            bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
+            content=ft.Text("Натисніть «Встановити». Якщо Android попросить дозволити встановлення "
+                            "з цього джерела — дозвольте, поверніться сюди й натисніть ще раз.",
+                            color=TEXT, size=14, width=dialog_width()),
+            actions=[
+                ft.TextButton("Пізніше", on_click=lambda e: page.pop_dialog(),
+                              style=ft.ButtonStyle(color=MUTED)),
+                ft.FilledButton("Встановити", icon=ft.Icons.INSTALL_MOBILE_ROUNDED, autofocus=TV,
+                                on_click=lambda e: page.run_task(launch_installer),
+                                style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF",
+                                                     icon_color="#FFFFFF")),
+            ],
+        ))
+        await launch_installer()
 
     async def show_whats_new():
         """Перший запуск нової версії — коротко, що змінилось."""
