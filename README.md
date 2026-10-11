@@ -29,8 +29,11 @@ push у `main`, вручну (Actions → Build → Run workflow) або при 
 |---|---|---|
 | macOS | `macos-latest` (Xcode) | `UAFix-Player-macOS.zip` → `UAFix Player.app` |
 | Windows | `windows-latest` (Visual Studio) | `UAFix-Player-Windows.zip` → `.exe` з бібліотеками |
-| Android | `ubuntu-latest` (Android SDK, JDK 17) | `UAFix-Player-Android.apk` |
-| Android TV | `ubuntu-latest` | `UAFix-Player-AndroidTV.apk` («UAFix TV», ставиться поруч зі звичайною) |
+| Android | `ubuntu-latest` (Android SDK, JDK 17) | `UAFix-Player-Android-arm64.apk` (сучасні телефони), `…-armv7.apk` (старі 32-бітні) |
+| Android TV | `ubuntu-latest` | `UAFix-Player-AndroidTV-arm64.apk` / `…-armv7.apk` («UAFix TV», ставиться поруч зі звичайною; більшість TV-приставок — armv7) |
+
+Android-збірки використовують шаблон Flet із запитом найвищої частоти екрана (90/120 Гц) —
+див. [tools/android_template.py](tools/android_template.py).
 
 Тег `v1.0.0` (`git tag v1.0.0 && git push --tags`) додатково створює GitHub Release з усіма трьома файлами.
 

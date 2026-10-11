@@ -57,14 +57,14 @@ def pill(text, icon=None, color=MUTED, bg=SURFACE_2, icon_color=None, bold=False
     )
 
 
-def glass_button(icon, on_click, tooltip=None, size=38):
+def glass_button(icon, on_click, tooltip=None, size=38, blur=True):
     """Кругла напівпрозора кнопка поверх зображень."""
     c = ft.Container(
         ft.Icon(icon, size=18, color=TEXT),
         width=size, height=size, border_radius=size / 2,
         bgcolor=ft.Colors.with_opacity(0.45, "#000000"),
         border=ft.Border.all(1, BORDER),
-        blur=ft.Blur(12, 12),
+        blur=ft.Blur(12, 12) if blur else None,  # на телефоні без розмиття — дорого для GPU
         alignment=ft.Alignment.CENTER,
         tooltip=tooltip, on_click=on_click,
         animate_scale=FAST, scale=1,

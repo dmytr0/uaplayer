@@ -133,7 +133,7 @@ def main(page: ft.Page):
     def round_button(icon, on_click, tooltip=None, size=38):
         """Кругла кнопка «скляна» на ПК; на телевізорі — звичайна IconButton (з фокусом)."""
         if not TV:
-            return ui.glass_button(icon, on_click, tooltip=tooltip, size=size)
+            return ui.glass_button(icon, on_click, tooltip=tooltip, size=size, blur=not is_mobile)
         return ft.IconButton(icon, on_click=on_click, tooltip=tooltip, icon_color=TEXT,
                              style=ft.ButtonStyle(
                                  bgcolor={ft.ControlState.FOCUSED: ACCENT,
@@ -323,7 +323,8 @@ def main(page: ft.Page):
     top_bar_box = drag_area(ft.Container(
         top_bar,
         padding=ft.Padding.only(left=12 + traffic_gap, right=20, top=10, bottom=10),
-        bgcolor=ft.Colors.with_opacity(0.85, BG), blur=ft.Blur(20, 20),
+        bgcolor=BG if is_mobile else ft.Colors.with_opacity(0.85, BG),
+        blur=None if is_mobile else ft.Blur(20, 20),
         border=ft.Border.only(bottom=ft.BorderSide(1, BORDER)),
     ))
 
@@ -880,11 +881,16 @@ def main(page: ft.Page):
         ctx = {"item": item, "info": None, "seasons": [], "season": 0}
 
         def backdrop_image(src):
-            return ft.Image(src=src, fit=ft.BoxFit.COVER, opacity=0.4) if src else None
+            # «Розмиття» без BackdropFilter: картинка декодується крихітною (36 px) і плавно
+            # розтягується. BackdropFilter на Android збивався при прокрутці (то розмито,
+            # то ні) і відбирав кадри — цей спосіб стабільний і майже нічого не коштує.
+            if not src:
+                return None
+            return ft.Image(src=src, fit=ft.BoxFit.COVER, opacity=0.45, cache_width=36,
+                            filter_quality=ft.FilterQuality.HIGH, gapless_playback=True)
 
         backdrop = ft.Container(backdrop_image(item["poster"]), left=0, top=0, right=0, height=640,
                                 clip_behavior=ft.ClipBehavior.HARD_EDGE)
-        backdrop_blur = ft.Container(left=0, top=0, right=0, height=640, blur=ft.Blur(40, 40))
         backdrop_fade = ft.Container(
             left=0, top=0, right=0, height=640,
             gradient=ft.LinearGradient(
@@ -1034,7 +1040,7 @@ def main(page: ft.Page):
             bar_title.opacity = 1 if compact else 0
             bar.update()
 
-        scroller = ft.ListView([ft.Stack([backdrop, backdrop_blur, backdrop_fade, content])],
+        scroller = ft.ListView([ft.Stack([backdrop, backdrop_fade, content])],
                                expand=True, padding=0, on_scroll=on_scroll, scroll_interval=50)
         title_bar = drag_area(bar)
         view = ft.View(
@@ -1656,12 +1662,24 @@ def main(page: ft.Page):
             # між кнопками, а перемотують кнопки ±10 с
             style.update(visible_on_mount=True, controls_hover_duration=24 * 3600 * 1000,
                          button_bar_height=72, primary_button_bar=[],
+                         seek_bar_margin=ft.Padding.only(left=40, right=40, bottom=24),
+                         bottom_button_bar_margin=ft.Padding.only(left=32, right=32, bottom=30),
                          backdrop_color="#22000000", seek_gesture=False, volume_gesture=False,
                          brightness_gesture=False, seek_on_double_tap=False)
             video.controls = fv.MaterialVideoControls(**style)
         else:
+            mobile_style = dict(
+                style,
+                # таймлайн не впритул до країв екрана (особливо в повноекранному режимі)
+                seek_bar_margin=ft.Padding.only(left=24, right=24, bottom=18),
+                bottom_button_bar_margin=ft.Padding.only(left=16, right=16, bottom=22),
+                # подвійний тап по лівій / правій половині — перемотка на 10 с
+                seek_on_double_tap=True,
+                seek_on_double_tap_backward_duration=ft.Duration(seconds=10),
+                seek_on_double_tap_forward_duration=ft.Duration(seconds=10),
+            )
             video.controls = fv.AdaptiveVideoControls(
-                material=fv.MaterialVideoControls(**style) if is_mobile else None,
+                material=fv.MaterialVideoControls(**mobile_style) if is_mobile else None,
                 material_desktop=None if is_mobile else fv.MaterialDesktopVideoControls(**style))
 
         def alive():
