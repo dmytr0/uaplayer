@@ -1,0 +1,78 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+            target: macos
+            output: build/macos
+          - name: Windows
+            os: windows-latest
+            target: windows
+            output: build/windows
+          - name: Android
+            os: ubuntu-latest
+            target: apk
+            output: build/apk
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+      FLET_CLI_NO_RICH_OUTPUT: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Java 17 (Android)
+        if: matrix.target == 'apk'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Flet CLI
+        run: pip install "flet[cli]==1.0.4"
+
+      # --yes: Flutter SDK (і Android SDK для apk) встановлюються без запитань
+      - name: flet build ${{ matrix.target }}
+        run: flet build ${{ matrix.target }} --yes --verbose
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UAFix-Player-${{ matrix.name }}
+          path: ${{ matrix.output }}
+          if-no-files-found: error
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Pack
+        run: |
+          cd artifacts
+          for d in */; do (cd "$d" && zip -qr "../${d%/}.zip" .); done
+          ls -la
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.zip

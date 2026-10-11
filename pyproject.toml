@@ -1,0 +1,22 @@
+[project]
+name = "uafix-player"
+version = "1.0.0"
+description = "Перегляд каталогу uafix.net і відтворення HLS-потоків"
+requires-python = ">=3.10"
+dependencies = [
+    "flet==1.0.4",
+    "flet-video==1.0.4",
+    "requests",
+    "beautifulsoup4",
+]
+
+[tool.flet]
+org = "net.uafix"
+product = "UAFix Player"
+company = "UAFix Player"
+copyright = "UAFix Player"
+
+[tool.flet.app]
+path = "."
+exclude = ["run.log", "run2.log", "README.md", ".github"]
+# дозвіл на інтернет (android.permission.INTERNET) і мережевий доступ macOS Flet додає сам
