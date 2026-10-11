@@ -57,6 +57,12 @@ SHELVES = [
 ]
 BANNER_INTERVAL = 7  # секунд на слайд
 
+# розмір субтитрів: (назва, множник базового розміру)
+SUB_SIZES = [("Малі", 0.75), ("Середні", 1.0), ("Великі", 1.3), ("Дуже великі", 1.6)]
+# масштаб відео: (ключ, назва, BoxFit)
+FIT_MODES = [("contain", "Вписати", ft.BoxFit.CONTAIN), ("cover", "Заповнити", ft.BoxFit.COVER),
+             ("fill", "Розтягнути", ft.BoxFit.FILL)]
+
 # TV-збірка (Android TV) додає модуль-прапорець uafix_tv_flag.py (саме модуль, а не файл:
 # на Android код може бути запакований у zip, де «файл поруч» не перевірити);
 # для перевірки на ПК — змінна середовища UAFIX_TV=1
@@ -140,6 +146,22 @@ def main(page: ft.Page):
                                           ft.ControlState.DEFAULT: ft.Colors.with_opacity(0.45, "#000000")},
                                  shape=ft.CircleBorder()))
 
+    prefs = ft.SharedPreferences()
+    settings = {"sub_scale": 1.0, "fit": "auto"}  # fit "auto": на телефоні в повному екрані — «Заповнити»
+
+    async def load_settings():
+        try:
+            for key in settings:
+                value = await prefs.get(key)
+                if value is not None:
+                    settings[key] = value
+        except Exception:
+            pass
+
+    def save_setting(key, value):
+        settings[key] = value
+        page.run_task(prefs.set, key, value)
+
     st = {"mode": ("home", None), "page": 1, "items": [], "has_more": True,
           "loading": False, "gen": 0, "layout": "grid"}
 
@@ -190,9 +212,8 @@ def main(page: ft.Page):
     drawer_controls = [
         ft.Container(
             ft.Row([
-                ft.Container(ft.Icon(ft.Icons.PLAY_ARROW_ROUNDED, color="#FFFFFF", size=22),
-                             width=36, height=36, border_radius=10, gradient=ui.ACCENT_GRADIENT,
-                             alignment=ft.Alignment.CENTER),
+                # іконка застосунку (assets/icon.png), як на робочому столі
+                ft.Image(src="/icon.png", width=44, height=44, border_radius=10),
                 ft.Column([ft.Text("UAFix", size=18, weight=ft.FontWeight.W_800, color=TEXT),
                            ft.Text("Фільми та серіали українською", size=11, color=MUTED)],
                           spacing=0),
@@ -1378,15 +1399,44 @@ def main(page: ft.Page):
                 return fv.VideoSubtitleTrack.none()
             return fv.VideoSubtitleTrack(src=sub["url"], title=sub["title"], language=sub["lang"])
 
+        def sub_config():
+            base = 20 if is_mobile else 34 if TV else 28
+            return fv.VideoSubtitleConfiguration(
+                text_style=ft.TextStyle(size=round(base * float(settings["sub_scale"])),
+                                        color="#FFFFFF", weight=ft.FontWeight.W_600,
+                                        bgcolor="#99000000"))
+
+        def fit_value(fullscreen_on=False):
+            mode = settings["fit"]
+            if mode == "auto":  # на телефоні в повному екрані — заповнити ширину
+                return ft.BoxFit.COVER if (is_mobile and fullscreen_on) else ft.BoxFit.CONTAIN
+            return next((f for k, _, f in FIT_MODES if k == mode), ft.BoxFit.CONTAIN)
+
+        def set_sub_size(scale):
+            save_setting("sub_scale", scale)
+            video.subtitle_configuration = sub_config()
+            refresh_bar()
+            page.update()
+
+        def cycle_fit(e=None):
+            keys = [k for k, _, _ in FIT_MODES]
+            current = settings["fit"] if settings["fit"] in keys else \
+                ("cover" if is_mobile and st.get("fullscreen") else "contain")
+            mode = keys[(keys.index(current) + 1) % len(keys)]
+            save_setting("fit", mode)
+            video.fit = fit_value()
+            video.update()
+            toast(f"Масштаб: {next(n for k, n, _ in FIT_MODES if k == mode)}",
+                  ft.Icons.ASPECT_RATIO_ROUNDED)
+
         now = ft.Text(names[0], size=12, color=MUTED, visible=bool(names[0]))
         video = fv.Video(
             expand=True, autoplay=True, title=show, fill_color="#000000",
             playlist=[fv.VideoMedia(e["url"], http_headers=core.stream_headers(e)) for e in entries],
             playlist_mode=fv.PlaylistMode.NONE,
             subtitle_track=track(subtitle_for(entries[0])),
-            subtitle_configuration=fv.VideoSubtitleConfiguration(
-                text_style=ft.TextStyle(size=30, color="#FFFFFF", weight=ft.FontWeight.W_600,
-                                        bgcolor="#99000000")),
+            subtitle_configuration=sub_config(),
+            fit=fit_value(),
         )
 
         async def on_error(e):
@@ -1503,8 +1553,12 @@ def main(page: ft.Page):
                                       lambda e, x=x: set_sub(x["lang"] or "on"))
                             for x in subs]
             sub_menu.content = badge("CC", bright=current is not None)
+            size_items = [menu_item(f"Розмір: {name.lower()}",
+                                    abs(float(settings["sub_scale"]) - scale) < 0.01,
+                                    lambda e, scale=scale: set_sub_size(scale))
+                          for name, scale in SUB_SIZES]
             sub_menu.items = [menu_item("Вимкнено", current is None, lambda e: set_sub(None)),
-                              *on_items]
+                              *on_items, ft.PopupMenuItem(), *size_items]
             # ті самі пункти — для вікна вибору на TV
             p["voice_opts"] = [(v, v == cur_voice, lambda e, v=v: page.run_task(switch_voice, v))
                                for v in voices]
@@ -1513,7 +1567,11 @@ def main(page: ft.Page):
                       [(f"Увімкнено ({x['title'].lower()})",
                         current is not None and current["url"] == x["url"],
                         lambda e, x=x: set_sub(x["lang"] or "on")) for x in subs])
-            p["sub_opts"] = [("Вимкнено", current is None, lambda e: set_sub(None)), *sub_on]
+            p["sub_opts"] = [("Вимкнено", current is None, lambda e: set_sub(None)), *sub_on,
+                             *[(f"Розмір: {name.lower()}",
+                                abs(float(settings["sub_scale"]) - scale) < 0.01,
+                                lambda e, scale=scale: set_sub_size(scale))
+                               for name, scale in SUB_SIZES]]
             tv_voice_btn.icon = badge(voice_code(cur_voice))
             tv_sub_btn.icon = badge("CC", bright=current is not None)
 
@@ -1610,6 +1668,8 @@ def main(page: ft.Page):
         # visible=False), плеєр уже не покаже. Тому — постійні «слоти», у які кнопку
         # вставляємо чи прибираємо; зміни вмісту слотів доходять до екрана.
         prev_slot, next_slot, voice_slot, sub_slot = (ft.Container() for _ in range(4))
+        fit_btn = bar_button(ft.Icons.ASPECT_RATIO_ROUNDED, "Масштаб: вписати / заповнити / розтягнути",
+                             cycle_fit)
 
         def refresh_bar():
             fill_menus()
@@ -1624,7 +1684,7 @@ def main(page: ft.Page):
                      automatically_imply_skip_previous_button=False,
                      bottom_button_bar=[prev_slot, fv.VideoPlayOrPauseButton(), next_slot,
                                         fv.VideoVolumeButton(), fv.VideoPositionIndicator(),
-                                        fv.VideoSpacer(), voice_slot, sub_slot,
+                                        fv.VideoSpacer(), voice_slot, sub_slot, fit_btn,
                                         fv.VideoFullscreenButton()])
         if TV:
             # Телевізор: без окремого повноекранного шару (у нього не потрапляє фокус пульта —
@@ -1656,7 +1716,8 @@ def main(page: ft.Page):
                        lambda e: page.run_task(seek_by, 10)),
                 # UA/CC — одразу за кнопками навігації: справа від роздільника панелі
                 # елементи фокусу з пульта не отримують
-                next_slot, voice_slot, sub_slot, fv.VideoPositionIndicator(), fv.VideoSpacer()]
+                next_slot, voice_slot, sub_slot, fit_btn, fv.VideoPositionIndicator(),
+                fv.VideoSpacer()]
             # «мобільна» панель: у «настільної» є вбудовані гарячі клавіші, які перехоплюють
             # стрілки (перемотка), і до ⏭ / UA / CC пультом не дістатись; тут стрілки ходять
             # між кнопками, а перемотують кнопки ±10 с
@@ -1774,10 +1835,10 @@ def main(page: ft.Page):
             st["fullscreen"] = on
             if not on:
                 st["fullscreen_exit"] = time.monotonic()
-            if is_mobile:
+            if is_mobile and settings["fit"] == "auto":
                 # більшість фільмів закодовано в кадр 16:9 з чорними смугами, а екран телефона
-                # ширший — на весь екран заповнюємо ширину (краї кадру трохи обрізаються)
-                video.fit = ft.BoxFit.COVER if on else ft.BoxFit.CONTAIN
+                # ширший — на весь екран заповнюємо ширину (поки користувач не обрав масштаб сам)
+                video.fit = fit_value(on)
                 video.update()
 
         video.on_enter_fullscreen = lambda e: fullscreen(True)
@@ -1868,8 +1929,9 @@ def main(page: ft.Page):
     page.views.clear()
     page.views.append(home)
     page.update()
-    if not is_mobile:
+    if is_desktop:
         page.run_task(page.window.center)
+    page.run_task(load_settings)
     go_home()
 
 

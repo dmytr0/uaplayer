@@ -5,36 +5,53 @@ on:
     branches: [main]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: "Які платформи збирати"
+        type: choice
+        default: all
+        options: [all, android, macos, windows]
 
 env:
   PYTHONUTF8: "1"            # кирилиця у виводі flet build на Windows
   PYTHONIOENCODING: utf-8
 
 jobs:
+  # перелік збірок; при ручному запуску можна обрати лише потрібні платформи
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - id: pick
+        shell: python
+        env:
+          PLATFORMS: ${{ github.event.inputs.platforms || 'all' }}
+        run: |
+          import json, os
+          jobs = [
+              {"name": "macOS", "os": "macos-latest", "target": "macos",
+               "artifact": "UAFix-Player-macOS", "group": "macos"},
+              {"name": "Windows", "os": "windows-latest", "target": "windows",
+               "artifact": "UAFix-Player-Windows", "group": "windows"},
+              {"name": "Android", "os": "ubuntu-latest", "target": "apk",
+               "artifact": "UAFix-Player-Android", "group": "android"},
+              {"name": "Android TV", "os": "ubuntu-latest", "target": "apk",
+               "artifact": "UAFix-Player-AndroidTV", "group": "android", "tv": True},
+          ]
+          want = os.environ["PLATFORMS"]
+          picked = [j for j in jobs if want == "all" or j["group"] == want]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("matrix=" + json.dumps({"include": picked}) + "\n")
+          print(json.dumps(picked, indent=1))
+
   build:
     name: ${{ matrix.name }}
+    needs: plan
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: macOS
-            os: macos-latest
-            target: macos
-            artifact: UAFix-Player-macOS
-          - name: Windows
-            os: windows-latest
-            target: windows
-            artifact: UAFix-Player-Windows
-          - name: Android
-            os: ubuntu-latest
-            target: apk
-            artifact: UAFix-Player-Android
-          - name: Android TV
-            os: ubuntu-latest
-            target: apk
-            artifact: UAFix-Player-AndroidTV
-            tv: true
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
       - uses: actions/checkout@v4

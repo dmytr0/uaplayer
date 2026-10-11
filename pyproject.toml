@@ -19,4 +19,10 @@ copyright = "UAFix Player"
 [tool.flet.app]
 path = "."
 exclude = ["run.log", "run2.log", "README.md", ".github", "icon_options", "dist", "tools", "android_template"]
+
+[tool.flet.android]
+# фон адаптивної іконки — як у самої іконки (інакше Flet підкладає білий і з'являється ореол);
+# сама іконка — assets/icon_android.png на всю площу, зміст у безпечній зоні
+adaptive_icon_background = "#15171C"
+
 # дозвіл на інтернет (android.permission.INTERNET) і мережевий доступ macOS Flet додає сам
