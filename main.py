@@ -59,6 +59,22 @@ SHELVES = [
 ]
 BANNER_INTERVAL = 7  # секунд на слайд
 
+# Налаштування mpv для нестабільного відеосервера: за замовчуванням плеєр тримає запас
+# лише на кілька секунд і при обриві з'єднання просто стоїть — звідси підвисання, фрізи
+# й розсинхрон звуку з картинкою. Більший запас наперед + автоматичне перепідключення.
+MPV_STREAMING = {
+    "cache": "yes",
+    "cache-secs": 60,                 # тримати до хвилини відео наперед
+    "demuxer-readahead-secs": 60,
+    "demuxer-max-bytes": "150MiB",
+    "demuxer-max-back-bytes": "50MiB",  # можна трохи перемотати назад без перезавантаження
+    "cache-pause-initial": "yes",     # на старті спершу накопичити трохи буфера
+    "cache-pause-wait": 3,            # після підвисання грати, лише коли є ≥3 с запасу
+    "network-timeout": 20,
+    "stream-lavf-o": "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,"
+                     "reconnect_delay_max=5",
+}
+
 # розмір субтитрів: (назва, множник базового розміру)
 SUB_SIZES = [("Малі", 0.75), ("Середні", 1.0), ("Великі", 1.3), ("Дуже великі", 1.6)]
 # масштаб відео: (ключ, назва, BoxFit)
@@ -1691,6 +1707,7 @@ def main(page: ft.Page):
             subtitle_track=track(subtitle_for(entries[0])),
             subtitle_configuration=sub_config(),
             fit=fit_value(),
+            configuration=fv.VideoConfiguration(mpv_properties=MPV_STREAMING),
         )
 
         async def on_error(e):
