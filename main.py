@@ -21,6 +21,7 @@ import flet_video as fv
 
 import core
 import ui
+import updater
 from ui import ACCENT, BG, BORDER, MUTED, SURFACE, SURFACE_2, SURFACE_3, TEXT
 
 # Розділи бічного меню: (секція, [(назва, шлях, іконка)])
@@ -148,7 +149,7 @@ def main(page: ft.Page):
                                  shape=ft.CircleBorder()))
 
     prefs = ft.SharedPreferences()
-    settings = {"sub_scale": 1.0, "fit": "auto"}  # fit "auto": на телефоні в повному екрані — «Заповнити»
+    settings = {"sub_scale": 1.0, "fit": "auto", "skipped_version": ""}  # fit "auto": на телефоні в повному екрані — «Заповнити»
 
     # Історія переглядів: [{url, title, orig, poster, age, season, label, si, ei, voice,
     # pos, dur, ts}] — найновіше першим. Позиція (pos) і тривалість (dur) — у мілісекундах.
@@ -167,6 +168,100 @@ def main(page: ft.Page):
         except Exception:
             pass
         render_continue()
+
+    # ── оновлення через GitHub Releases
+    UPDATE_CHECK_EVERY = 6 * 3600  # автоматично — не частіше ніж раз на 6 годин
+    platform_name = {ft.PagePlatform.ANDROID: "android", ft.PagePlatform.MACOS: "macos",
+                     ft.PagePlatform.WINDOWS: "windows"}.get(page.platform)
+
+    def notes_view(notes):
+        return ft.Container(
+            ft.Column([ft.Markdown(notes or "Без опису змін.", selectable=True,
+                                   extension_set=ft.MarkdownExtensionSet.GITHUB_WEB)],
+                      scroll=ft.ScrollMode.AUTO, tight=True),
+            width=480, height=320 if not is_mobile else None)
+
+    def show_update_dialog(rel):
+        url = updater.asset_for(rel, platform_name, TV) or rel["url"]
+        hint = ("Після завантаження відкрийте файл і натисніть «Встановити»."
+                if platform_name == "android" else
+                "Розпакуйте архів і замініть ним попередню версію застосунку.")
+
+        def update(e):
+            page.pop_dialog()
+            page.run_task(ft.UrlLauncher().launch_url, url, mode=ft.LaunchMode.EXTERNAL_APPLICATION)
+            toast(hint, ft.Icons.DOWNLOAD_ROUNDED)
+
+        def skip(e):
+            save_setting("skipped_version", rel["version"])
+            page.pop_dialog()
+
+        page.show_dialog(ft.AlertDialog(
+            title=ft.Text(f"Доступна версія {rel['version']}", weight=ft.FontWeight.W_800),
+            bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
+            content=ft.Column([
+                ft.Text(f"У вас версія {updater.VERSION}. Що нового:", color=MUTED, size=13),
+                notes_view(rel["notes"]),
+            ], tight=True, spacing=10),
+            actions=[
+                ft.TextButton("Пропустити", on_click=skip, style=ft.ButtonStyle(color=MUTED)),
+                ft.TextButton("Пізніше", on_click=lambda e: page.pop_dialog(),
+                              style=ft.ButtonStyle(color=TEXT)),
+                ft.FilledButton("Оновити", icon=ft.Icons.DOWNLOAD_ROUNDED, on_click=update,
+                                autofocus=TV, style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF",
+                                                                   icon_color="#FFFFFF")),
+            ],
+        ))
+
+    async def show_whats_new():
+        """Перший запуск нової версії — коротко, що змінилось."""
+        last = await prefs.get("last_version")
+        if last == updater.VERSION:
+            return
+        await prefs.set("last_version", updater.VERSION)
+        if not last:
+            return  # перше встановлення — показувати нічого
+        try:
+            notes = await asyncio.to_thread(updater.release_notes, updater.VERSION)
+        except Exception:
+            return
+        page.show_dialog(ft.AlertDialog(
+            title=ft.Text(f"Що нового у версії {updater.VERSION}", weight=ft.FontWeight.W_800),
+            bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
+            content=notes_view(notes),
+            actions=[ft.FilledButton("Чудово", autofocus=TV, on_click=lambda e: page.pop_dialog(),
+                                     style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF"))],
+        ))
+
+    async def check_updates(manual=False):
+        if updater.VERSION == "dev":
+            if manual:
+                toast("Це версія для розробки — оновлення не перевіряються")
+            return
+        now = time.time()
+        if not manual:
+            try:
+                if now - float(await prefs.get("update_checked_at") or 0) < UPDATE_CHECK_EVERY:
+                    return
+            except Exception:
+                pass
+        try:
+            rel = await asyncio.to_thread(updater.latest_release)
+        except Exception:
+            if manual:
+                toast("Не вдалося перевірити оновлення", ft.Icons.ERROR_OUTLINE_ROUNDED)
+            return
+        await prefs.set("update_checked_at", now)
+        if updater.is_newer(rel["version"]) and (
+                manual or rel["version"] != settings.get("skipped_version")):
+            show_update_dialog(rel)
+        elif manual:
+            toast(f"У вас найновіша версія {updater.VERSION}", ft.Icons.CHECK_CIRCLE_ROUNDED)
+
+    async def startup():
+        await load_settings()
+        await show_whats_new()
+        await check_updates()
 
     def save_history():
         page.run_task(prefs.set, "history", json.dumps(history[:HISTORY_MAX], ensure_ascii=False))
@@ -299,6 +394,16 @@ def main(page: ft.Page):
         for name, _, icon in items:
             drawer_controls.append(ft.NavigationDrawerDestination(
                 label=name, icon=ft.Icon(icon, color=MUTED), selected_icon=ft.Icon(icon, color=ACCENT)))
+
+    drawer_controls += [
+        ft.Container(ft.Divider(color=BORDER), padding=ft.Padding.only(left=20, right=20, top=10)),
+        ft.Container(ft.Column([
+            ft.Text(f"Версія {updater.VERSION}", size=12, color=MUTED),
+            ft.TextButton("Перевірити оновлення", icon=ft.Icons.SYSTEM_UPDATE_ROUNDED,
+                          style=ft.ButtonStyle(color=ACCENT, icon_color=ACCENT, padding=0),
+                          on_click=lambda e: page.run_task(check_updates, True)),
+        ], spacing=4, tight=True), padding=ft.Padding.only(left=28, right=20, bottom=24)),
+    ]
 
     drawer = ft.NavigationDrawer(
         controls=drawer_controls, selected_index=0, bgcolor=SURFACE,
@@ -2125,7 +2230,7 @@ def main(page: ft.Page):
     page.update()
     if is_desktop:
         page.run_task(page.window.center)
-    page.run_task(load_settings)
+    page.run_task(startup)
     go_home()
 
 

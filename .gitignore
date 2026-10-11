@@ -8,3 +8,4 @@ dist/
 run*.log
 uafix_tv_flag.py
 android_template/
+app_version.py

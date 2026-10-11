@@ -70,6 +70,39 @@ jobs:
       - name: Install Flet CLI
         run: pip install "flet[cli]==1.0.4"
 
+      # Версія вшивається в застосунок (app_version.py) для перевірки оновлень:
+      # з тегу v1.2.3 → 1.2.3, інакше — з pyproject.toml
+      - name: App version
+        shell: python
+        run: |
+          import os, re
+          ref = os.environ.get("GITHUB_REF_NAME", "")
+          if os.environ.get("GITHUB_REF_TYPE") == "tag" and ref.startswith("v"):
+              version = ref[1:]
+          else:
+              version = re.search(r'^version\s*=\s*"([^"]+)"', open("pyproject.toml", encoding="utf-8").read(), re.M).group(1)
+          open("app_version.py", "w", encoding="utf-8").write(f'VERSION = "{version}"\n')
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"APP_VERSION={version}\n")
+          print("version:", version)
+
+      # Постійний ключ підпису: без нього кожна збірка підписана новим ключем, і Android
+      # не встановлює оновлення поверх попередньої версії
+      - name: Android signing key
+        if: matrix.target == 'apk'
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then echo "Немає секрету ANDROID_KEYSTORE_B64 — підпис налагоджувальним ключем"; exit 0; fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/uafix-release.p12"
+          {
+            echo "FLET_ANDROID_SIGNING_KEY_STORE=$RUNNER_TEMP/uafix-release.p12"
+            echo "FLET_ANDROID_SIGNING_KEY_STORE_PASSWORD=$KEYSTORE_PASSWORD"
+            echo "FLET_ANDROID_SIGNING_KEY_PASSWORD=$KEYSTORE_PASSWORD"
+            echo "FLET_ANDROID_SIGNING_KEY_ALIAS=uafix"
+          } >> "$GITHUB_ENV"
+
       # TV-збірка: прапорець вмикає TV-режим (керування з пульта, плеєр на весь екран);
       # окремі назва й ідентифікатор — щоб ставилась поруч зі звичайною версією
       - name: Android TV mode
@@ -87,7 +120,7 @@ jobs:
           echo 'APK_ARGS=--template android_template/build --split-per-abi --arch arm64-v8a armeabi-v7a' >> "$GITHUB_ENV"
 
       - name: flet build ${{ matrix.target }}
-        run: flet build ${{ matrix.target }} --yes --verbose --no-rich-output --build-number ${{ github.run_number }} ${{ env.TV_ARGS }} ${{ env.APK_ARGS }}
+        run: flet build ${{ matrix.target }} --yes --verbose --no-rich-output --build-number ${{ github.run_number }} --build-version ${{ env.APP_VERSION }} ${{ env.TV_ARGS }} ${{ env.APK_ARGS }}
 
       - name: Pack macOS app
         if: matrix.target == 'macos'
@@ -123,10 +156,27 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
+      # опис змін — розділ «## <версія>» із CHANGELOG.md; його ж показує застосунок
+      # у вікні оновлення й «Що нового»
+      - name: Release notes
+        shell: python
+        run: |
+          import os, re
+          version = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          text = open("CHANGELOG.md", encoding="utf-8").read()
+          m = re.search(rf"^## \[?{re.escape(version)}\]?[^\n]*\n(.*?)(?=^## |\Z)", text, re.M | re.S)
+          open("release_notes.md", "w", encoding="utf-8").write(
+              m.group(1).strip() if m else "Виправлення та покращення.")
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
+          name: UAFix Player ${{ github.ref_name }}
+          body_path: release_notes.md
+          make_latest: true
           files: dist/*
