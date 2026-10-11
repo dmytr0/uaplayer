@@ -180,7 +180,12 @@ def main(page: ft.Page):
         await reload()
 
     # ═════════════════════ верхня панель ═════════════════════
-    subheading = ft.Text("", size=12, color=MUTED)
+    subheading = ft.Text("", size=12, color=MUTED, visible=False)
+
+    def set_subheading(text):
+        subheading.value = text
+        subheading.visible = bool(text)
+
     # старий заголовок зникає миттєво (reverse_duration=0), щоб тексти не накладались
     heading_switcher = ft.AnimatedSwitcher(
         ft.Text(""), duration=180, reverse_duration=0, transition=ft.AnimatedSwitcherTransition.FADE,
@@ -218,9 +223,16 @@ def main(page: ft.Page):
         },
         prefix_icon=ft.Icons.SEARCH_ROUNDED, cursor_color=ACCENT,
         hint_style=ft.TextStyle(color=MUTED, size=14),
-        content_padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+        content_padding=ft.Padding.symmetric(horizontal=12, vertical=0),
+        text_vertical_align=ft.VerticalAlignment.CENTER,
+        # іконки не повинні розтягувати поле (на Windows воно ставало дуже високим)
+        prefix_icon_size_constraints=ft.BoxConstraints(min_width=40, max_width=40,
+                                                       min_height=40, max_height=40),
+        suffix_icon_size_constraints=ft.BoxConstraints(min_width=36, max_width=36,
+                                                       min_height=40, max_height=40),
+        size_constraints=ft.BoxConstraints(min_height=40, max_height=40),
         width=None if is_mobile else 320, expand=is_mobile,
-        suffix=clear_btn, on_change=on_search_change,
+        suffix_icon=clear_btn, on_change=on_search_change,
         on_submit=lambda e: page.run_task(do_search, e.control.value),
     )
 
@@ -244,12 +256,15 @@ def main(page: ft.Page):
     menu_btn = ft.IconButton(ft.Icons.MENU_ROUNDED, icon_color=TEXT, tooltip="Розділи",
                              on_click=lambda e: page.run_task(home.show_drawer))
 
-    title_block = ft.Column([heading_switcher, subheading], spacing=0, expand=True)
+    title_block = ft.Column([heading_switcher, subheading], spacing=0, expand=True,
+                            alignment=ft.MainAxisAlignment.CENTER)
     if is_mobile:
-        top_bar = ft.Column([ft.Row([menu_btn, title_block, layout_toggle], spacing=4),
+        top_bar = ft.Column([ft.Row([menu_btn, title_block, layout_toggle], spacing=4,
+                                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
                              ft.Row([search])], spacing=8)
     else:
-        top_bar = ft.Row([menu_btn, title_block, search, layout_toggle], spacing=12)
+        top_bar = ft.Row([menu_btn, title_block, search, layout_toggle], spacing=12,
+                         vertical_alignment=ft.CrossAxisAlignment.CENTER)
     top_bar_box = drag_area(ft.Container(
         top_bar,
         padding=ft.Padding.only(left=12 + traffic_gap, right=20, top=10, bottom=10),
@@ -433,7 +448,7 @@ def main(page: ft.Page):
 
     def update_subheading():
         n = len(st["items"])
-        subheading.value = f"{n} {plural(n, 'тайтл', 'тайтли', 'тайтлів')}" if n else ""
+        set_subheading(f"{n} {plural(n, 'тайтл', 'тайтли', 'тайтлів')}" if n else "")
 
     async def fetch_page(page_no):
         kind, val = st["mode"]
@@ -448,7 +463,7 @@ def main(page: ft.Page):
         st["gen"] += 1
         gen = st["gen"]
         st.update(page=1, items=[], has_more=True, loading=True)
-        subheading.value = "Завантаження…"
+        set_subheading("Завантаження…")
         body.content = skeleton()
         page.update()
         try:
@@ -461,7 +476,7 @@ def main(page: ft.Page):
                 body.content = empty_state(
                     error_icon(msg), "Немає з'єднання" if offline else "Не вдалося завантажити",
                     msg, retry=lambda: page.run_task(reload))
-                subheading.value = ""
+                set_subheading("")
                 page.update()
             return
         if gen != st["gen"]:
@@ -756,7 +771,7 @@ def main(page: ft.Page):
         st["gen"] += 1
         drawer.selected_index = 0
         set_heading("Головна")
-        subheading.value = ""
+        set_subheading("")
         layout_toggle.visible = False
         body.content = home_content
         page.update()
