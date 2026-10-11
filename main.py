@@ -190,12 +190,15 @@ def main(page: ft.Page):
     platform_name = {ft.PagePlatform.ANDROID: "android", ft.PagePlatform.MACOS: "macos",
                      ft.PagePlatform.WINDOWS: "windows"}.get(page.platform)
 
+    def dialog_width():
+        return min(440, (page.width or 480) - 64)
+
     def notes_view(notes):
         return ft.Container(
             ft.Column([ft.Markdown(notes or "Без опису змін.", selectable=True,
                                    extension_set=ft.MarkdownExtensionSet.GITHUB_WEB)],
                       scroll=ft.ScrollMode.AUTO, tight=True),
-            width=480, height=320 if not is_mobile else None)
+            width=dialog_width())  # висота за вмістом; довгий опис прокручує саме вікно
 
     def show_update_dialog(rel):
         url = updater.asset_for(rel, platform_name, TV) or rel["url"]
@@ -212,21 +215,28 @@ def main(page: ft.Page):
             save_setting("skipped_version", rel["version"])
             page.pop_dialog()
 
+        # кнопки — власним блоком: стандартний ряд дії на вузькому екрані розсипався стовпчиком
         page.show_dialog(ft.AlertDialog(
             title=ft.Text(f"Доступна версія {rel['version']}", weight=ft.FontWeight.W_800),
-            bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
+            bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18), scrollable=True,
             content=ft.Column([
                 ft.Text(f"У вас версія {updater.VERSION}. Що нового:", color=MUTED, size=13),
                 notes_view(rel["notes"]),
+                ft.Container(height=4),
+                ft.FilledButton(
+                    "Оновити", icon=ft.Icons.DOWNLOAD_ROUNDED, on_click=update, autofocus=TV,
+                    width=dialog_width(),
+                    style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF", icon_color="#FFFFFF",
+                                         padding=ft.Padding.symmetric(vertical=16),
+                                         shape=ft.RoundedRectangleBorder(radius=12),
+                                         text_style=ft.TextStyle(size=15, weight=ft.FontWeight.W_700))),
+                ft.Row([
+                    ft.TextButton("Пізніше", on_click=lambda e: page.pop_dialog(),
+                                  style=ft.ButtonStyle(color=TEXT)),
+                    ft.TextButton("Пропустити версію", on_click=skip,
+                                  style=ft.ButtonStyle(color=MUTED)),
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, width=dialog_width()),
             ], tight=True, spacing=10),
-            actions=[
-                ft.TextButton("Пропустити", on_click=skip, style=ft.ButtonStyle(color=MUTED)),
-                ft.TextButton("Пізніше", on_click=lambda e: page.pop_dialog(),
-                              style=ft.ButtonStyle(color=TEXT)),
-                ft.FilledButton("Оновити", icon=ft.Icons.DOWNLOAD_ROUNDED, on_click=update,
-                                autofocus=TV, style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF",
-                                                                   icon_color="#FFFFFF")),
-            ],
         ))
 
     async def show_whats_new():
@@ -243,7 +253,7 @@ def main(page: ft.Page):
             return
         page.show_dialog(ft.AlertDialog(
             title=ft.Text(f"Що нового у версії {updater.VERSION}", weight=ft.FontWeight.W_800),
-            bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
+            bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18), scrollable=True,
             content=notes_view(notes),
             actions=[ft.FilledButton("Чудово", autofocus=TV, on_click=lambda e: page.pop_dialog(),
                                      style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF"))],
@@ -273,6 +283,10 @@ def main(page: ft.Page):
             show_update_dialog(rel)
         elif manual:
             toast(f"У вас найновіша версія {updater.VERSION}", ft.Icons.CHECK_CIRCLE_ROUNDED)
+
+    async def check_updates_from_menu():
+        await home.close_drawer()  # вікно оновлення — не поверх відкритого меню
+        await check_updates(manual=True)
 
     async def startup():
         await load_settings()
@@ -417,7 +431,7 @@ def main(page: ft.Page):
             ft.Text(f"Версія {updater.VERSION}", size=12, color=MUTED),
             ft.TextButton("Перевірити оновлення", icon=ft.Icons.SYSTEM_UPDATE_ROUNDED,
                           style=ft.ButtonStyle(color=ACCENT, icon_color=ACCENT, padding=0),
-                          on_click=lambda e: page.run_task(check_updates, True)),
+                          on_click=lambda e: page.run_task(check_updates_from_menu)),
         ], spacing=4, tight=True), padding=ft.Padding.only(left=28, right=20, bottom=24)),
     ]
 
@@ -1075,7 +1089,7 @@ def main(page: ft.Page):
             item = {k: h.get(k, "") for k in ("url", "title", "orig", "poster", "age")}
             c = grid_card(item, progress=h["pos"] / h["dur"] if h.get("dur") else 0,
                           caption=resume_caption(h),
-                          on_open=lambda item=item: page.run_task(open_title, item, False, True))
+                          on_open=lambda item=item: page.run_task(open_title, item))
             ui.reveal(c)
             cards.append(ft.Container(c, width=shelf_card_w))
         continue_row.controls = cards
@@ -1677,10 +1691,29 @@ def main(page: ft.Page):
                                         bgcolor="#99000000"))
 
         def fit_value(fullscreen_on=False):
+            if is_mobile and not fullscreen_on:
+                # на телефоні у звичайному (вертикальному) режимі — завжди «вписати»:
+                # обраний для повного екрана масштаб тут розтягував би кадр
+                return ft.BoxFit.CONTAIN
             mode = settings["fit"]
             if mode == "auto":  # на телефоні в повному екрані — заповнити ширину
-                return ft.BoxFit.COVER if (is_mobile and fullscreen_on) else ft.BoxFit.CONTAIN
+                return ft.BoxFit.COVER if is_mobile else ft.BoxFit.CONTAIN
             return next((f for k, _, f in FIT_MODES if k == mode), ft.BoxFit.CONTAIN)
+
+        FIT_ICONS = {"contain": ft.Icons.FIT_SCREEN_ROUNDED, "cover": ft.Icons.CROP_FREE_ROUNDED,
+                     "fill": ft.Icons.OPEN_IN_FULL_ROUNDED}
+
+        def current_fit_mode():
+            keys = [k for k, _, _ in FIT_MODES]
+            if settings["fit"] in keys:
+                return settings["fit"]
+            return "cover" if is_mobile else "contain"  # «auto»
+
+        def refresh_fit_button():
+            """Іконка й підказка кнопки показують поточний режим (замість спливаючої плашки)."""
+            mode = current_fit_mode()
+            fit_btn.icon = FIT_ICONS[mode]
+            fit_btn.tooltip = f"Масштаб: {next(n for k, n, _ in FIT_MODES if k == mode).lower()}"
 
         def set_sub_size(scale):
             save_setting("sub_scale", scale)
@@ -1690,14 +1723,11 @@ def main(page: ft.Page):
 
         def cycle_fit(e=None):
             keys = [k for k, _, _ in FIT_MODES]
-            current = settings["fit"] if settings["fit"] in keys else \
-                ("cover" if is_mobile and st.get("fullscreen") else "contain")
-            mode = keys[(keys.index(current) + 1) % len(keys)]
+            mode = keys[(keys.index(current_fit_mode()) + 1) % len(keys)]
             save_setting("fit", mode)
-            video.fit = fit_value()
+            video.fit = fit_value(st.get("fullscreen", False))
+            refresh_fit_button()
             video.update()
-            toast(f"Масштаб: {next(n for k, n, _ in FIT_MODES if k == mode)}",
-                  ft.Icons.ASPECT_RATIO_ROUNDED)
 
         now = ft.Text(names[0], size=12, color=MUTED, visible=bool(names[0]))
         video = fv.Video(
@@ -1939,8 +1969,8 @@ def main(page: ft.Page):
         # visible=False), плеєр уже не покаже. Тому — постійні «слоти», у які кнопку
         # вставляємо чи прибираємо; зміни вмісту слотів доходять до екрана.
         prev_slot, next_slot, voice_slot, sub_slot = (ft.Container() for _ in range(4))
-        fit_btn = bar_button(ft.Icons.ASPECT_RATIO_ROUNDED, "Масштаб: вписати / заповнити / розтягнути",
-                             cycle_fit)
+        fit_btn = bar_button(ft.Icons.ASPECT_RATIO_ROUNDED, "Масштаб", cycle_fit)
+        refresh_fit_button()
 
         def refresh_bar():
             fill_menus()
@@ -2107,9 +2137,10 @@ def main(page: ft.Page):
             st["fullscreen"] = on
             if not on:
                 st["fullscreen_exit"] = time.monotonic()
-            if is_mobile and settings["fit"] == "auto":
-                # більшість фільмів закодовано в кадр 16:9 з чорними смугами, а екран телефона
-                # ширший — на весь екран заповнюємо ширину (поки користувач не обрав масштаб сам)
+            if is_mobile:
+                # на весь екран — обраний масштаб (за замовчуванням «заповнити»: фільми
+                # закодовано в кадр 16:9 з чорними смугами, а екран телефона ширший);
+                # назад у вертикальний режим — знову «вписати»
                 video.fit = fit_value(on)
                 video.update()
 
