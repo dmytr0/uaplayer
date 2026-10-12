@@ -22,6 +22,7 @@ import flet_video as fv
 import cast as uafix_cast
 import core
 import feedback
+import sync
 import ui
 import updater
 from ui import ACCENT, BG, BORDER, MUTED, SURFACE, SURFACE_2, SURFACE_3, TEXT
@@ -262,7 +263,9 @@ def main(page: ft.Page):
     # fit "auto": на телефоні в повному екрані — «Заповнити»; quality: "1080" / "720" / "480"
     settings = {"sub_scale": 1.0, "fit": "auto", "skipped_version": "",
                 "auto_updates": True, "keep_history": True, "quality": "1080",
-                "auto_fullscreen": True}  # телефон: поворот — повний екран
+                "auto_fullscreen": True,  # телефон: поворот — повний екран
+                "sync_code": "", "history_cleared": 0,  # синхронізація між пристроями
+                "volume_boost": "6"}  # підсилення гучності, дБ: "0" / "6" / "10"
 
     # Історія переглядів: [{url, title, orig, poster, age, season, label, si, ei, voice,
     # pos, dur, ts}] — найновіше першим. Позиція (pos) і тривалість (dur) — у мілісекундах.
@@ -271,16 +274,23 @@ def main(page: ft.Page):
     favorites = []  # обране: [{url, title, orig, poster, age}] — новіше першим
 
     def is_favorite(url):
-        return any(f["url"] == url for f in favorites)
+        return any(f["url"] == url and not f.get("removed") for f in favorites)
+
+    def active_favorites():
+        return [f for f in favorites if not f.get("removed")]
 
     def toggle_favorite(item):
-        if is_favorite(item["url"]):
-            favorites[:] = [f for f in favorites if f["url"] != item["url"]]
-            added = False
-        else:
-            favorites.insert(0, {k: item.get(k, "") for k in ("url", "title", "orig", "poster", "age")})
-            added = True
+        # прибране лишається позначкою removed (з часом) — щоб синхронізація прибрала його
+        # і на інших пристроях, а не повернула назад
+        added = not is_favorite(item["url"])
+        favorites[:] = [f for f in favorites if f["url"] != item["url"]]
+        entry = {k: item.get(k, "") for k in ("url", "title", "orig", "poster", "age")}
+        entry["ts"] = int(time.time())
+        if not added:
+            entry["removed"] = True
+        favorites.insert(0, entry)
         page.run_task(prefs.set, "favorites", json.dumps(favorites, ensure_ascii=False))
+        sync_changed(now=True)
         return added
 
     async def load_settings():
@@ -545,11 +555,72 @@ def main(page: ft.Page):
 
     async def startup():
         await load_settings()
+        page.run_task(sync_now, True)
+        page.run_task(sync_loop)
         await show_whats_new()
         await check_updates()
 
     def save_history():
         page.run_task(prefs.set, "history", json.dumps(history[:HISTORY_MAX], ensure_ascii=False))
+        sync_changed()
+
+    # ── синхронізація між пристроями (sync.py, сервер — sync_worker/)
+    sync_state = {"dirty": False, "busy": False, "last": 0.0}
+
+    def sync_doc():
+        return {"history": history[:HISTORY_MAX], "favorites": favorites,
+                "history_cleared": settings["history_cleared"]}
+
+    def apply_sync(doc):
+        """Злиті дані з усіх пристроїв → у цей пристрій (якщо щось змінилось)."""
+        if json.dumps(doc, sort_keys=True) == json.dumps(sync_doc(), sort_keys=True):
+            return
+        history[:] = doc.get("history") or []
+        favorites[:] = doc.get("favorites") or []
+        if doc.get("history_cleared", 0) != settings["history_cleared"]:
+            save_setting("history_cleared", doc.get("history_cleared", 0))
+        page.run_task(prefs.set, "history", json.dumps(history, ensure_ascii=False))
+        page.run_task(prefs.set, "favorites", json.dumps(favorites, ensure_ascii=False))
+        render_continue(focus=False)
+        if len(page.views) == 1 and st["mode"] == ("cat", FAV_PATH):
+            page.run_task(reload)
+
+    async def sync_now(manual=False):
+        code = settings["sync_code"]
+        if not code or sync_state["busy"]:
+            return
+        sync_state["busy"] = True
+        try:
+            if sync_state["dirty"] or manual:
+                sync_state["dirty"] = False
+                merged = await asyncio.to_thread(sync.push, code, sync_doc())
+            else:  # нічого свого нового — лише забрати зміни з інших пристроїв
+                remote = await asyncio.to_thread(sync.pull, code)
+                merged = sync.merge(sync_doc(), remote)
+            apply_sync(merged)
+            sync_state["last"] = time.time()
+            if manual:
+                toast("Синхронізовано", ft.Icons.CLOUD_DONE_ROUNDED)
+        except Exception as ex:
+            sync_state["dirty"] = True  # спробуємо наступного разу
+            if manual:
+                msg = await explain(ex, "синхронізацію")
+                toast(msg, error_icon(msg))
+        finally:
+            sync_state["busy"] = False
+
+    def sync_changed(now=False):
+        if not settings["sync_code"]:
+            return
+        sync_state["dirty"] = True
+        if now:
+            page.run_task(sync_now)
+
+    async def sync_loop():
+        # раз на хвилину: свої зміни (якщо є) — на сервер, чужі — сюди
+        while True:
+            await asyncio.sleep(60)
+            await sync_now()
 
     def history_entry(url):
         return next((h for h in history if h["url"] == url), None)
@@ -1110,7 +1181,7 @@ def main(page: ft.Page):
     async def fetch_page(page_no):
         kind, val = st["mode"]
         if kind == "cat" and val == FAV_PATH:
-            return list(favorites) if page_no == 1 else []
+            return active_favorites() if page_no == 1 else []
         url = core.catalog_url(val, page_no) if kind == "cat" else core.search_url(val, page_no)
         return await asyncio.to_thread(lambda: core.parse_catalog(core.fetch(url)))
 
@@ -1467,7 +1538,10 @@ def main(page: ft.Page):
 
     def clear_history():
         history.clear()
+        # позначка часу очищення — щоб історія очистилась і на інших пристроях
+        save_setting("history_cleared", int(time.time()))
         save_history()
+        sync_changed(now=True)
         render_continue()
         toast("Історію переглядів очищено", ft.Icons.CHECK_CIRCLE_ROUNDED)
 
@@ -1481,7 +1555,7 @@ def main(page: ft.Page):
         if TV else continue_row,
     ], spacing=0, visible=False)
 
-    def render_continue():
+    def render_continue(focus=True):
         items = [h for h in history if not watched(h)][:15]
         continue_section.visible = bool(items)
         if TV:
@@ -1502,7 +1576,7 @@ def main(page: ft.Page):
             # і після повернення назад фокус губився)
             target = continue_list.controls[0] if continue_list.controls else \
                 (tv_first_tile[0] if tv_first_tile else None)
-            if target is not None and len(page.views) <= 1 and st["mode"][0] == "home":
+            if focus and target is not None and len(page.views) <= 1 and st["mode"][0] == "home":
                 page.run_task(focus_later, target)
             return
         cards = []
@@ -1724,7 +1798,7 @@ def main(page: ft.Page):
                 label = ft.Text(next((n for n, v in options if str(v) == str(current)), ""),
                                 color=ACCENT, size=15, weight=ft.FontWeight.W_600)
                 title = {"sub_scale": "Розмір субтитрів", "quality": "Якість відео",
-                         "fit": "Масштаб на весь екран"}.get(key, "")
+                         "fit": "Масштаб на весь екран", "volume_boost": "Гучність"}.get(key, "")
 
                 def on_pick(value):
                     save_setting(key, float(value) if key == "sub_scale" else value)
@@ -1789,7 +1863,7 @@ def main(page: ft.Page):
             ))
 
         def reset_settings(e):
-            for key, value in (("sub_scale", 1.0), ("fit", "auto"), ("quality", "1080"), ("auto_fullscreen", True),
+            for key, value in (("sub_scale", 1.0), ("fit", "auto"), ("quality", "1080"), ("auto_fullscreen", True), ("volume_boost", "6"),
                                ("auto_updates", True),
                                ("keep_history", True), ("skipped_version", "")):
                 save_setting(key, value)
@@ -1860,6 +1934,103 @@ def main(page: ft.Page):
             )
             show_dialog(dlg)
 
+        def sync_rows():
+            code = settings["sync_code"]
+            if not code:
+                return [
+                    row(ft.Icons.CLOUD_SYNC_ROUNDED, "Увімкнути синхронізацію",
+                        "Історія, хвилина, де зупинились, і обране — спільні на телефоні, "
+                        "комп'ютері й телевізорі", on_click=lambda e: sync_enable()),
+                    row(ft.Icons.PASSWORD_ROUNDED, "Ввести код з іншого пристрою",
+                        "Якщо синхронізацію вже увімкнено на іншому пристрої",
+                        on_click=lambda e: sync_enter_code()),
+                ]
+            last = sync_state["last"]
+            ago = (time.strftime("%H:%M", time.localtime(last)) if last else "ще ні")
+            return [
+                row(ft.Icons.KEY_ROUNDED, f"Код: {sync.pretty(code)}",
+                    "Введіть цей код на інших своїх пристроях", on_click=lambda e: sync_show_code()),
+                row(ft.Icons.SYNC_ROUNDED, "Синхронізувати зараз", f"Остання синхронізація: {ago}",
+                    on_click=lambda e: page.run_task(sync_now, True)),
+                row(ft.Icons.CLOUD_OFF_ROUNDED, "Вимкнути на цьому пристрої",
+                    "Історія на цьому пристрої залишиться", on_click=lambda e: sync_disable()),
+            ]
+
+        def reopen_settings():
+            pop_view()
+            page.run_task(open_settings)
+
+        def sync_show_code():
+            show_dialog(ft.AlertDialog(
+                title=ft.Text("Код синхронізації", weight=ft.FontWeight.W_800),
+                bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
+                content=ft.Column([
+                    ft.Container(ft.Text(sync.pretty(settings["sync_code"]), size=34,
+                                         weight=ft.FontWeight.W_800, color=ACCENT,
+                                         selectable=True, font_family="monospace"),
+                                 alignment=ft.Alignment.CENTER, padding=10),
+                    ft.Text("На іншому пристрої: Налаштування → Синхронізація → «Ввести код з "
+                            "іншого пристрою». Порада: на телевізорі код зручніше показати, "
+                            "а ввести — на телефоні.", color=MUTED, size=13),
+                ], tight=True, spacing=8, width=dialog_width()),
+                actions=[ft.FilledButton("Готово", on_click=lambda e: page.pop_dialog(),
+                                         style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF"))],
+            ))
+
+        def sync_enable():
+            save_setting("sync_code", sync.new_code())
+            sync_state["dirty"] = True
+            page.run_task(sync_now, True)
+            reopen_settings()
+            sync_show_code()
+
+        def sync_enter_code():
+            err = ft.Text("", color="#E5484D", size=12, visible=False)
+
+            def submit(e=None):
+                code = sync.normalize(field.value)
+                if not code:
+                    err.value, err.visible = "Код має 12 символів, наприклад K7QF-29XM-PL4D", True
+                    err.update()
+                    return
+                page.pop_dialog()
+                save_setting("sync_code", code)
+                sync_state["dirty"] = True
+                page.run_task(sync_now, True)  # своє + з інших пристроїв, злите
+                reopen_settings()
+
+            field = ft.TextField(hint_text="XXXX-XXXX-XXXX", autofocus=True, text_size=22,
+                                 capitalization=ft.TextCapitalization.CHARACTERS,
+                                 filled=True, fill_color=SURFACE_2, cursor_color=ACCENT,
+                                 on_submit=submit, width=dialog_width())
+            show_dialog(ft.AlertDialog(
+                title=ft.Text("Код з іншого пристрою", weight=ft.FontWeight.W_800),
+                bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
+                content=ft.Column([field, err], tight=True, spacing=8),
+                actions=[ft.TextButton("Скасувати", on_click=lambda e: page.pop_dialog(),
+                                       style=ft.ButtonStyle(color=MUTED)),
+                         ft.FilledButton("Підключити", on_click=submit,
+                                         style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF"))],
+            ))
+
+        def sync_disable():
+            def confirm(e):
+                page.pop_dialog()
+                save_setting("sync_code", "")
+                reopen_settings()
+                toast("Синхронізацію на цьому пристрої вимкнено", ft.Icons.CLOUD_OFF_ROUNDED)
+
+            show_dialog(ft.AlertDialog(
+                title=ft.Text("Вимкнути синхронізацію?", weight=ft.FontWeight.W_800),
+                bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
+                content=ft.Text("Цей пристрій перестане обмінюватися історією з іншими. "
+                                "Те, що вже є тут, залишиться.", color=TEXT, width=dialog_width()),
+                actions=[ft.TextButton("Скасувати", on_click=lambda e: page.pop_dialog(),
+                                       style=ft.ButtonStyle(color=MUTED)),
+                         ft.FilledButton("Вимкнути", on_click=confirm,
+                                         style=ft.ButtonStyle(bgcolor="#E5484D", color="#FFFFFF"))],
+            ))
+
         def issue_url():
             device = f"{platform_name or page.platform}{' (TV)' if TV else ''}"
             body = (f"**Версія:** {updater.VERSION}\n**Пристрій:** {device}\n\n"
@@ -1873,6 +2044,10 @@ def main(page: ft.Page):
             section("Відтворення", [
                 row(ft.Icons.SUBTITLES_ROUNDED, "Розмір субтитрів",
                     trailing=choice("sub_scale", SUB_SIZES)),
+                row(ft.Icons.VOLUME_UP_ROUNDED, "Гучність",
+                    "Підсилення звуку фільмів (діє з наступного запуску відео)",
+                    trailing=choice("volume_boost", [("Звичайна", "0"), ("Голосніше", "6"),
+                                                     ("Максимум", "10")])),
                 row(ft.Icons.HIGH_QUALITY_ROUNDED, "Якість відео",
                     "Якщо такої немає — найближча нижча. Можна змінити й під час перегляду",
                     trailing=choice("quality", [("1080p", "1080"), ("720p", "720"),
@@ -1890,6 +2065,7 @@ def main(page: ft.Page):
                 row(ft.Icons.DELETE_OUTLINE_ROUNDED, "Очистити історію", history_info,
                     on_click=ask_clear_history, color="#E5484D"),
             ]),
+            section("Синхронізація", sync_rows()),
             section("Оновлення", [
                 row(ft.Icons.UPDATE_ROUNDED, "Перевіряти автоматично",
                     "При запуску, не частіше ніж раз на 6 годин", trailing=switch("auto_updates")),
@@ -2566,6 +2742,19 @@ def main(page: ft.Page):
 
         now = ft.Text(names[0], size=12, color=MUTED, visible=bool(names[0]))
 
+        def mpv_properties():
+            props = dict(MPV_STREAMING)
+            boost = str(settings.get("volume_boost") or "0")
+            if boost != "0":
+                # підсилення гучності (у сайту звук голосніший, ніж у плеєра «на 100 %»).
+                # Звукових фільтрів (volume, alimiter) у вбудованому libmpv немає — з ними
+                # звук зникав зовсім; тому вбудоване підсилення replaygain: потоки без тегів
+                # гучності отримують replaygain-fallback дБ
+                props.update({"replaygain": "track", "replaygain-fallback": boost})
+            if os.environ.get("UAFIX_MPV_LOG"):  # діагностика: журнал mpv у файл
+                props.update({"log-file": os.environ["UAFIX_MPV_LOG"], "msg-level": "all=v"})
+            return props
+
         def media(e):
             return fv.VideoMedia(core.quality_url(e["url"], p["quality"]),
                                  http_headers=core.stream_headers(e))
@@ -2577,7 +2766,7 @@ def main(page: ft.Page):
             subtitle_track=track(subtitle_for(entries[0])),
             subtitle_configuration=sub_config(),
             fit=fit_value(),
-            configuration=fv.VideoConfiguration(mpv_properties=MPV_STREAMING),
+            configuration=fv.VideoConfiguration(mpv_properties=mpv_properties()),
         )
 
         async def on_error(e):
@@ -3501,6 +3690,7 @@ def main(page: ft.Page):
         except Exception:
             pass
         pop_view()
+        page.run_task(sync_now)  # де зупинились — одразу на інші пристрої
 
     def pop_view():
         if len(page.views) <= 1:

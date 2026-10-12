@@ -1,6 +1,6 @@
 [project]
 name = "uafix-player"
-version = "1.1.10"
+version = "1.1.11"
 description = "Перегляд каталогу uafix.net і відтворення HLS-потоків"
 requires-python = ">=3.10"
 dependencies = [
@@ -20,7 +20,7 @@ copyright = "UAFix Player"
 
 [tool.flet.app]
 path = "."
-exclude = ["run.log", "run2.log", "README.md", ".github", "icon_options", "dist", "tools", "android_template", "CHANGELOG.md"]
+exclude = ["run.log", "run2.log", "README.md", ".github", "icon_options", "dist", "tools", "android_template", "CHANGELOG.md", "sync_worker", "preview"]
 
 [tool.flet.android]
 # фон адаптивної іконки — як у самої іконки (інакше Flet підкладає білий і з'являється ореол);
