@@ -19,6 +19,9 @@ MED = ft.Animation(280, EASE)
 SLOW = ft.Animation(450, EASE)
 APPEAR = ft.Animation(250, EASE)
 
+# «легкий» режим для слабких пристроїв (телевізори): без анімацій появи
+LITE = False
+
 ACCENT_GRADIENT = ft.LinearGradient(
     begin=ft.Alignment.TOP_LEFT, end=ft.Alignment.BOTTOM_RIGHT, colors=[ACCENT_2, ACCENT])
 
@@ -97,6 +100,8 @@ def poster_image(src, radius=0, cache_width=None, **kw):
 
 def appear(control):
     """Готує контрол до появи (fade + легкий підйом). Викликати reveal() після update()."""
+    if LITE:
+        return control
     control.opacity = 0
     control.offset = ft.Offset(0, 0.04)
     control.animate_opacity = APPEAR

@@ -11,6 +11,7 @@ Flet потрібної версії й замінює MainActivity: та оби
 Використання (CI):  python tools/android_template.py <тека>  →  flet build apk --template <тека>/build
 """
 import io
+import shutil
 import sys
 import urllib.request
 import zipfile
@@ -100,6 +101,9 @@ INSTALL_INTENT_FILTER = '''
                 <data android:scheme="uafixupdate" />
             </intent-filter>'''
 LAUNCHER_FILTER_END = "<!-- Google TV -->\n            </intent-filter>"
+# банер для лаунчера Android TV (без нього там лише сірий прямокутник із назвою)
+APP_ICON_ATTR = 'android:icon="@mipmap/ic_launcher">'
+BANNER = Path(__file__).with_name("tv_banner.png")
 
 
 def main(out_dir: str) -> None:
@@ -121,6 +125,11 @@ def main(out_dir: str) -> None:
     if LAUNCHER_FILTER_END not in manifest:
         sys.exit("Не знайдено intent-filter лаунчера в AndroidManifest.xml — шаблон змінився")
     manifest = manifest.replace(LAUNCHER_FILTER_END, LAUNCHER_FILTER_END + INSTALL_INTENT_FILTER, 1)
+    if APP_ICON_ATTR not in manifest:
+        sys.exit("Не знайдено android:icon у <application> — шаблон змінився")
+    manifest = manifest.replace(
+        APP_ICON_ATTR, 'android:banner="@drawable/tv_banner"\n        ' + APP_ICON_ATTR, 1)
+    shutil.copy(BANNER, manifests[0].parent / "res" / "drawable-xhdpi" / "tv_banner.png")
     manifests[0].write_text(manifest, encoding="utf-8")
     print(f"Оновлено {manifests[0]}")
 
