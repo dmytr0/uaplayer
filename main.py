@@ -169,34 +169,76 @@ def main(page: ft.Page):
     traffic_gap = 78 if is_mac else 0
     side_pad = 18 if is_mobile else 40
 
-    def focusable(content, on_click, on_focus_change=None, radius=14, autofocus=False):
+    def focusable(content, on_click, on_focus_change=None, radius=14, autofocus=False,
+                  focus_bg=None):
         """Обгортка, що отримує фокус з пульта (кнопка без власного оформлення).
-        Звичайні контейнери з on_click фокусу не отримують — пультом їх не вибрати."""
+        Звичайні контейнери з on_click фокусу не отримують — пультом їх не вибрати.
+        Рамку фокуса (і фон — focus_bg: (у фокусі, звичайний)) малює сам Flutter, миттєво:
+        через Python на слабкому телевізорі вона не встигала за швидкими натисканнями."""
+        bg = ({ft.ControlState.FOCUSED: focus_bg[0], ft.ControlState.DEFAULT: focus_bg[1]}
+              if focus_bg else ft.Colors.TRANSPARENT)
         return ft.Button(
             content=content, on_click=on_click, autofocus=autofocus,
             on_focus=(lambda e: on_focus_change(True)) if on_focus_change else None,
             on_blur=(lambda e: on_focus_change(False)) if on_focus_change else None,
             style=ft.ButtonStyle(
-                padding=0, elevation=0, bgcolor=ft.Colors.TRANSPARENT,
+                padding=0, elevation=0, bgcolor=bg, side=TV_FOCUS_SIDE if TV else None,
                 overlay_color=ft.Colors.TRANSPARENT, shadow_color=ft.Colors.TRANSPARENT,
                 shape=ft.RoundedRectangleBorder(radius=radius), animation_duration=0))
 
-    def tv_tap(ctrl, action, highlight=None, radius=12, autofocus=False):
+    TV_FOCUS_SIDE = {ft.ControlState.FOCUSED: ft.BorderSide(4, "#FFFFFF"),
+                     ft.ControlState.DEFAULT: ft.BorderSide(0, ft.Colors.TRANSPARENT)}
+
+    def show_dialog(dlg):
+        """page.show_dialog + на телевізорі: біла рамка фокуса на кнопках вікна й фокус на
+        головній (autofocus у щойно відкритому вікні не спрацьовує — OK «нікуди» не натискався)."""
+        if not TV:
+            page.show_dialog(dlg)
+            return
+        buttons = []
+
+        def walk(c):
+            if c is None:
+                return
+            if isinstance(c, (ft.FilledButton, ft.TextButton, ft.OutlinedButton, ft.IconButton)):
+                buttons.append(c)
+                return
+            for attr in ("content", "controls", "actions"):
+                v = getattr(c, attr, None)
+                if isinstance(v, list):
+                    for x in v:
+                        walk(x)
+                elif isinstance(v, ft.Control):
+                    walk(v)
+
+        walk(dlg)
+        for b in buttons:
+            if b.style is None:
+                b.style = ft.ButtonStyle()
+            b.style.side = TV_FOCUS_SIDE
+        page.show_dialog(dlg)  # після стилів: інакше зміни вже не дійдуть до екрана
+        target = next((b for b in buttons if getattr(b, "autofocus", False)), None) or \
+            next((b for b in reversed(buttons) if isinstance(b, ft.FilledButton)), None) or \
+            (buttons[0] if buttons else None)
+        if target is not None:
+            page.run_task(focus_later, target)
+
+    def tv_tap(ctrl, action, highlight=None, radius=12, autofocus=False, focus_bg=None):
         """На ПК повертає контейнер як є; на телевізорі — обгортає його у фокусовану кнопку
-        (біла рамка, поки фокус на ній)."""
+        (біла рамка, поки фокус на ній; focus_bg — фон у фокусі / звичайний). highlight —
+        додаткові зміни при фокусі (кольори іконок тощо), через Python — тож другорядні."""
         if not TV:
             return ctrl
         ctrl.on_click = None
-        base_border = ctrl.border
+        if focus_bg:
+            ctrl.bgcolor = None  # фон малює кнопка (миттєво змінює у фокусі)
 
         def on_focus(f):
-            if highlight:
-                highlight(f)
-            # біла рамка видна і на звичайних, і на виділених (помаранчевих) елементах
-            ctrl.border = ft.Border.all(5, "#FFFFFF") if f else base_border
+            highlight(f)
             ctrl.update()
 
-        return focusable(ctrl, action, on_focus, radius=radius, autofocus=autofocus)
+        return focusable(ctrl, action, on_focus if highlight else None, radius=radius,
+                         autofocus=autofocus, focus_bg=focus_bg)
 
     def round_button(icon, on_click, tooltip=None, size=38):
         """Кругла кнопка «скляна» на ПК; на телевізорі — звичайна IconButton (з фокусом)."""
@@ -294,7 +336,7 @@ def main(page: ft.Page):
             page.pop_dialog()
 
         # кнопки — власним блоком: стандартний ряд дії на вузькому екрані розсипався стовпчиком
-        page.show_dialog(ft.AlertDialog(
+        show_dialog(ft.AlertDialog(
             title=ft.Text(f"Доступна версія {rel['version']}", weight=ft.FontWeight.W_800),
             bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18), scrollable=True,
             content=ft.Column([
@@ -345,7 +387,7 @@ def main(page: ft.Page):
             actions=[ft.TextButton("Сховати", on_click=lambda e: page.pop_dialog(),
                                    style=ft.ButtonStyle(color=TEXT))],
         )
-        page.show_dialog(dlg)
+        show_dialog(dlg)
         last = [0.0]
 
         def progress(done, total):
@@ -381,7 +423,7 @@ def main(page: ft.Page):
             pass
         # вікно на випадок, якщо Android спершу попросить дозволити встановлення програм:
         # після дозволу достатньо повернутись і натиснути «Встановити»
-        page.show_dialog(ft.AlertDialog(
+        show_dialog(ft.AlertDialog(
             title=ft.Text(f"Версія {version} завантажена", weight=ft.FontWeight.W_800),
             bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
             content=ft.Text("Натисніть «Встановити». Якщо Android попросить дозволити встановлення "
@@ -415,7 +457,7 @@ def main(page: ft.Page):
             if manual:
                 toast("Не вдалося завантажити список змін", ft.Icons.ERROR_OUTLINE_ROUNDED)
             return
-        page.show_dialog(ft.AlertDialog(
+        show_dialog(ft.AlertDialog(
             title=ft.Text(f"Що нового у версії {updater.VERSION}", weight=ft.FontWeight.W_800),
             bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18), scrollable=True,
             content=notes_view(notes),
@@ -773,7 +815,7 @@ def main(page: ft.Page):
                                          ft.ControlState.DEFAULT: ft.OutlineInputBorder(
                                              border_radius=12, side=ft.BorderSide(1, BORDER))},
                                  width=560, on_submit=submit)
-            page.show_dialog(ft.AlertDialog(
+            show_dialog(ft.AlertDialog(
                 title=ft.Text("Пошук", size=24, weight=ft.FontWeight.W_800),
                 bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
                 content=field,
@@ -855,12 +897,6 @@ def main(page: ft.Page):
         )
 
         def highlight(h):
-            if TV:
-                # телевізор: лише товста біла рамка, миттєво — без масштабу, тіней і анімацій
-                # (на слабкому процесорі вони гальмують, і не видно, де зараз фокус)
-                card.border = ft.Border.all(5, "#FFFFFF") if h else ft.Border.all(1, BORDER)
-                card.update()
-                return
             card.scale = 1.045 if h else 1
             card.border = ft.Border.all(1, ft.Colors.with_opacity(0.55, ACCENT) if h else BORDER)
             card.shadow = ft.BoxShadow(
@@ -874,8 +910,10 @@ def main(page: ft.Page):
             card.shadow = None
             card.animate = card.animate_scale = None
             card.width, card.height = TV_CARD_W, TV_CARD_W / POSTER_RATIO
+            # телевізор: лише біла рамка фокуса (її малює Flutter, миттєво) — без масштабу,
+            # тіней і анімацій, що на слабкому процесорі гальмують
             return ui.appear(focusable(
-                card, lambda e: on_open() if on_open else page.run_task(open_title, item), highlight))
+                card, lambda e: on_open() if on_open else page.run_task(open_title, item)))
         card.on_hover = lambda e: highlight(ui.hovered(e))
         return ui.appear(card)
 
@@ -910,7 +948,12 @@ def main(page: ft.Page):
             # щоб над ним було видно заголовок
             top = (lambda f: f and page.run_task(home_content.scroll_to, offset=0, duration=150)) \
                 if autofocus else None
-            return tv_tap(row, lambda e: open_(), highlight=top, radius=14, autofocus=autofocus)
+            def open_tv(e):
+                st["return_focus"] = btn  # після «Назад» фокус — знову на цей рядок
+                open_()
+
+            btn = tv_tap(row, open_tv, highlight=top, radius=14, autofocus=autofocus)
+            return btn
 
         def hover(e):
             h = ui.hovered(e)
@@ -1410,8 +1453,12 @@ def main(page: ft.Page):
                 continue_section.update()
             except Exception:
                 pass
-            if not items and tv_first_tile:
-                page.run_task(focus_later, tv_first_tile[0])
+            # фокус — на перший пункт (autofocus у вже показаному екрані не спрацьовує,
+            # і після повернення назад фокус губився)
+            target = continue_list.controls[0] if continue_list.controls else \
+                (tv_first_tile[0] if tv_first_tile else None)
+            if target is not None and len(page.views) <= 1 and st["mode"][0] == "home":
+                page.run_task(focus_later, target)
             return
         cards = []
         for h in items:
@@ -1431,20 +1478,22 @@ def main(page: ft.Page):
         ic = ft.Icon(icon, color=ACCENT, size=28)
         tile = ft.Container(
             ft.Row([ic, ft.Text(name, size=18, weight=ft.FontWeight.W_600, color=TEXT)], spacing=14),
-            width=300, height=76, padding=ft.Padding.symmetric(horizontal=20),
+            height=76, padding=ft.Padding.symmetric(horizontal=20),
             bgcolor=SURFACE_2, border_radius=14, border=ft.Border.all(1, BORDER),
             alignment=ft.Alignment.CENTER_LEFT)
 
-        def lit(f):  # вибрана плитка — оранжева, як кнопка «Пошук»
-            tile.bgcolor = ACCENT if f else SURFACE_2
+        def lit(f):  # іконка на оранжевому (вибраному) тлі — біла
             ic.color = "#FFFFFF" if f else ACCENT
             if f and last:
                 # пульт прокручує лише до краю плитки — для останнього ряду докручуємо
                 # до кінця, щоб знизу лишався відступ
                 page.run_task(home_content.scroll_to, offset=-1, duration=150)
 
-        return tv_tap(tile, lambda e: page.run_task(open_category, name, path), highlight=lit,
-                      radius=14, autofocus=autofocus)
+        # вибрана плитка — оранжева, як кнопка «Пошук»
+        btn = tv_tap(tile, lambda e: page.run_task(open_category, name, path), highlight=lit,
+                     radius=14, autofocus=autofocus, focus_bg=(ACCENT, SURFACE_2))
+        btn.col = 4  # по три в ряд на всю ширину екрана
+        return btn
 
     tv_first_tile = []  # куди ставити фокус, якщо «Продовжити перегляд» порожній
 
@@ -1459,7 +1508,7 @@ def main(page: ft.Page):
                 tv_first_tile.append(tiles[0])
             blocks.append(ft.Column([
                 ft.Text(group, size=22, weight=ft.FontWeight.W_800, color=TEXT),
-                ft.Row(tiles, wrap=True, spacing=16, run_spacing=16),
+                ft.ResponsiveRow(tiles, spacing=16, run_spacing=16),
             ], spacing=12))
         return ft.Container(ft.Column(blocks, spacing=28),
                             padding=ft.Padding.only(left=side, right=side, top=8))
@@ -1567,7 +1616,6 @@ def main(page: ft.Page):
                     padding=ft.Padding.symmetric(horizontal=18, vertical=14), bgcolor=SURFACE_2)
 
                 def lit(f):
-                    box.bgcolor = ACCENT if f else SURFACE_2
                     ic.color = "#FFFFFF" if f else (ACCENT if color == TEXT else color)
                     if isinstance(trailing, ft.Icon):  # перемикач: увімкнено — оранжевий
                         trailing.color = "#FFFFFF" if f else (
@@ -1575,7 +1623,8 @@ def main(page: ft.Page):
                     elif isinstance(trailing, ft.Text):
                         trailing.color = "#FFFFFF" if f else ACCENT
 
-                btn = tv_tap(box, on_click or (lambda e: None), highlight=lit, radius=0)
+                btn = tv_tap(box, on_click or (lambda e: None), highlight=lit, radius=0,
+                             focus_bg=(ACCENT, SURFACE_2))
                 if first_row[0]:
                     tv_focus_first.append(btn)
                 first_row[0] = False
@@ -1600,7 +1649,7 @@ def main(page: ft.Page):
                     on_pick(value)
                 return handler
 
-            page.show_dialog(ft.AlertDialog(
+            show_dialog(ft.AlertDialog(
                 title=ft.Text(title, size=22, weight=ft.FontWeight.W_800, color=TEXT),
                 bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
                 content=ft.Column([
@@ -1683,7 +1732,7 @@ def main(page: ft.Page):
                 clear_history()
                 refresh_history_info()
                 history_info.update()
-            page.show_dialog(ft.AlertDialog(
+            show_dialog(ft.AlertDialog(
                 title=ft.Text("Очистити історію?", weight=ft.FontWeight.W_800),
                 bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
                 content=ft.Text("Зникне поличка «Продовжити перегляд» і збережені позиції "
@@ -1711,7 +1760,11 @@ def main(page: ft.Page):
             kind = {"value": "bug"}
             kinds = ft.SegmentedButton(
                 selected=["bug"], show_selected_icon=False,
-                segments=[ft.Segment(k, label=ft.Text(v)) for k, v in feedback.KINDS.items()],
+                # короткі підписи без емодзі — на вузькому екрані телефона довгі розривалися
+                segments=[ft.Segment(k, label=ft.Text(v, size=14, no_wrap=True,
+                                                      weight=ft.FontWeight.W_600))
+                          for k, v in (("bug", "Помилка"), ("idea", "Ідея"),
+                                       ("review", "Відгук"))],
                 style=ft.ButtonStyle(
                     shape=ft.RoundedRectangleBorder(radius=10), side=ft.BorderSide(1, BORDER),
                     bgcolor={ft.ControlState.SELECTED: ft.Colors.with_opacity(0.18, ACCENT),
@@ -1748,7 +1801,8 @@ def main(page: ft.Page):
                                        style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF",
                                                             icon_color="#FFFFFF"))
             dlg = ft.AlertDialog(
-                title=ft.Text("Повідомити про проблему", weight=ft.FontWeight.W_800),
+                title=ft.Text("Повідомити про проблему", weight=ft.FontWeight.W_800,
+                              size=20 if is_mobile else 24),
                 bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18), scrollable=True,
                 content=ft.Column([
                     kinds, text,
@@ -1759,7 +1813,7 @@ def main(page: ft.Page):
                                        style=ft.ButtonStyle(color=MUTED)),
                          send_btn],
             )
-            page.show_dialog(dlg)
+            show_dialog(dlg)
 
         def issue_url():
             device = f"{platform_name or page.platform}{' (TV)' if TV else ''}"
@@ -1974,6 +2028,8 @@ def main(page: ft.Page):
         ctx["voice_row"] = voice_row
         ctx["voice_box"] = voice_box
 
+        actions_row = ft.Row([resume_btn, play_btn, fav_btn, trailer_btn, m3u_btn, site_btn],
+                             spacing=10 if not TV else 14, wrap=not TV)
         hero_info = ui.appear(ft.Container(ft.Column([
             title, orig,
             ft.Container(height=6),
@@ -1982,8 +2038,8 @@ def main(page: ft.Page):
             description, more_btn,
             ft.Container(height=8),
             voice_box,
-            ft.Row([resume_btn, play_btn, fav_btn, trailer_btn, m3u_btn, site_btn], spacing=10,
-                   wrap=True),
+            # на телевізорі кнопки — окремим рядком під постером (див. нижче), а не з переносом
+            *([] if TV else [actions_row]),
             ft.Container(height=4),
             cast,
         ], spacing=6), padding=ft.Padding.only(top=8)))
@@ -2020,7 +2076,9 @@ def main(page: ft.Page):
         ctx.update(seasons_row=seasons_row, episodes_box=episodes_box)
 
         content = ft.Container(
-            ft.Column([hero, ft.Container(height=36), episodes_section], spacing=0),
+            ft.Column([hero, *([ft.Container(actions_row, padding=ft.Padding.only(top=24))]
+                               if TV else []),
+                       ft.Container(height=36), episodes_section], spacing=0),
             padding=ft.Padding.only(left=side_pad, right=side_pad, top=8 if is_mobile else 16,
                                     bottom=60),
         )
@@ -2154,8 +2212,9 @@ def main(page: ft.Page):
         await asyncio.sleep(0.35)  # після того, як кнопку ввімкнено (чи закрито вікно)
         try:
             await control.focus()
-        except Exception:
-            pass
+        except Exception as ex:
+            if os.environ.get("UAFIX_DEBUG"):
+                print("focus_later failed:", type(control).__name__, repr(ex))
 
     async def ensure_sources(ep):
         """Потоки серії; для серіалів з окремими сторінками серій — завантажуються раз, на вимогу."""
@@ -2541,7 +2600,7 @@ def main(page: ft.Page):
             def dismissed(e):
                 p["dialog"] = False
 
-            page.show_dialog(ft.AlertDialog(
+            show_dialog(ft.AlertDialog(
                 on_dismiss=dismissed,
                 title=ft.Text(title, size=22, weight=ft.FontWeight.W_800, color=TEXT),
                 bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
@@ -2696,7 +2755,7 @@ def main(page: ft.Page):
                 content=devices_col,
                 actions=[ft.TextButton("Скасувати", on_click=lambda e: page.pop_dialog(),
                                        style=ft.ButtonStyle(color=MUTED))])
-            page.show_dialog(dlg)
+            show_dialog(dlg)
             try:
                 devices = await asyncio.to_thread(uafix_cast.discover)
             except Exception:
@@ -2781,7 +2840,7 @@ def main(page: ft.Page):
                                      on_click=lambda e: page.run_task(cast_do, action))
 
             cast_ui.update(pos=pos_text, bar=bar, toggle=toggle)
-            page.show_dialog(ft.AlertDialog(
+            show_dialog(ft.AlertDialog(
                 title=ft.Row([ft.Icon(ft.Icons.CAST_CONNECTED_ROUNDED, color=ACCENT),
                               ft.Text(sess.name, weight=ft.FontWeight.W_800, expand=True,
                                       max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)], spacing=10),
@@ -3354,6 +3413,8 @@ def main(page: ft.Page):
         render_continue()
         if len(page.views) == 1 and st["mode"] == ("cat", FAV_PATH):
             page.run_task(reload)  # могли прибрати з обраного на сторінці фільму
+        elif TV and len(page.views) == 1 and st["mode"][0] != "home" and st.get("return_focus"):
+            page.run_task(focus_later, st["return_focus"])
         page.update()
 
     async def on_key(e: ft.KeyboardEvent):
