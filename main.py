@@ -14,7 +14,7 @@ import json
 import os
 import re
 import time
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import flet as ft
 import flet_video as fv
@@ -373,7 +373,9 @@ def main(page: ft.Page):
 
     async def open_settings_from_menu():
         await home.close_drawer()
-        open_settings()
+        # спершу дати меню доїхати: інакше побудова екрана й анімація меню накладаються — ривок
+        await asyncio.sleep(0.12)
+        await open_settings()
 
     async def startup():
         await load_settings()
@@ -1111,6 +1113,22 @@ def main(page: ft.Page):
         on_hover=banner_hover,
     )
 
+    # свайп по банеру пальцем (або мишею) — попередній / наступний слайд
+    swipe = {"x": 0.0}
+
+    def swipe_start(e: ft.DragStartEvent):
+        swipe["x"] = e.local_position.x
+
+    def swipe_end(e: ft.DragEndEvent):
+        dx = e.local_position.x - swipe["x"] if e.local_position else 0
+        v = e.primary_velocity or 0
+        if abs(v) > 250 or abs(dx) > 60:
+            step = 1 if (v or dx) < 0 else -1  # палець вліво — наступний слайд
+            page.run_task(show_slide, hero["i"] + step)
+
+    banner_swipe = ft.GestureDetector(banner, on_horizontal_drag_start=swipe_start,
+                                      on_horizontal_drag_end=swipe_end)
+
     # ── полички під банером
     shelf_card_w = 220 if is_mobile else TV_CARD_W
 
@@ -1187,7 +1205,7 @@ def main(page: ft.Page):
             pass  # головна ще не на екрані
 
     home_content = ft.ListView(
-        [banner, continue_section, *[col for col, _ in shelves], ft.Container(height=40)],
+        [banner_swipe, continue_section, *[col for col, _ in shelves], ft.Container(height=40)],
         expand=True, spacing=18, padding=0, key="home")
 
     async def load_home():
@@ -1234,7 +1252,7 @@ def main(page: ft.Page):
     )
 
     # ═════════════════════ налаштування ═════════════════════
-    def open_settings():
+    async def open_settings():
         def section(title, rows):
             return ft.Column([
                 ft.Container(ft.Text(title.upper(), size=11, color=MUTED, weight=ft.FontWeight.W_700),
@@ -1301,12 +1319,20 @@ def main(page: ft.Page):
                                ("keep_history", True), ("skipped_version", "")):
                 save_setting(key, value)
             pop_view()
-            open_settings()
+            page.run_task(open_settings)
             toast("Налаштування скинуто", ft.Icons.CHECK_CIRCLE_ROUNDED)
 
         def open_link(url):
             page.run_task(ft.UrlLauncher().launch_url, url,
                           mode=ft.LaunchMode.EXTERNAL_APPLICATION)
+
+        def issue_url():
+            device = f"{platform_name or page.platform}{' (TV)' if TV else ''}"
+            body = (f"**Версія:** {updater.VERSION}\n**Пристрій:** {device}\n\n"
+                    "**Що сталося:**\n\n\n**Як повторити (фільм / серія, що натискали):**\n\n\n"
+                    "**Скріншот або відео** (можна перетягнути сюди):\n")
+            return (f"https://github.com/{updater.REPO}/issues/new?"
+                    + urlencode({"title": "Проблема: ", "body": body, "labels": "bug"}))
 
         fit_options = [("Авто", "auto")] + [(n, k) for k, n, _ in FIT_MODES]
         sections = [
@@ -1339,7 +1365,8 @@ def main(page: ft.Page):
                 row(ft.Icons.CODE_ROUNDED, "Сторінка проєкту", "GitHub: усі версії й зміни",
                     on_click=lambda e: open_link(f"https://github.com/{updater.REPO}/releases")),
                 row(ft.Icons.BUG_REPORT_OUTLINED, "Повідомити про проблему",
-                    on_click=lambda e: open_link(f"https://github.com/{updater.REPO}/issues/new")),
+                    "Відкриє форму на GitHub з даними про версію й пристрій",
+                    on_click=lambda e: open_link(issue_url())),
                 row(ft.Icons.RESTART_ALT_ROUNDED, "Скинути налаштування", on_click=reset_settings),
             ]),
             ft.Text(f"UAFix Player {updater.VERSION} · вміст — uafix.net", size=12, color=MUTED,
@@ -1352,8 +1379,9 @@ def main(page: ft.Page):
                    spacing=14),
             height=58, padding=ft.Padding.only(left=14 + traffic_gap, right=14), bgcolor=BG,
         )
+        content = ui.appear(ft.Column(sections, spacing=22))
         body_col = ft.ListView(
-            [ft.Row([ft.Container(ft.Column(sections, spacing=22),
+            [ft.Row([ft.Container(content,
                                   width=min(640, (page.width or 672) - 32))],
                     alignment=ft.MainAxisAlignment.CENTER)],
             expand=True, padding=ft.Padding.only(top=8, bottom=32))
@@ -1362,6 +1390,9 @@ def main(page: ft.Page):
             controls=[safe(ft.Column([drag_area(bar), body_col], expand=True, spacing=0))],
         ))
         page.update()
+        await asyncio.sleep(0.05)
+        ui.reveal(content)
+        content.update()
 
     # ═════════════════════ сторінка тайтлу ═════════════════════
     async def open_title(item, autoplay=False, resume=False):
