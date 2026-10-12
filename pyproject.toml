@@ -1,6 +1,6 @@
 [project]
 name = "uafix-player"
-version = "1.1.11"
+version = "1.1.13"
 description = "Перегляд каталогу uafix.net і відтворення HLS-потоків"
 requires-python = ">=3.10"
 dependencies = [
@@ -53,3 +53,8 @@ bgcolor_light = "#0D0E12"
 bgcolor_dark = "#0D0E12"
 spinner_color_light = "#FF6A3D"
 spinner_color_dark = "#FF6A3D"
+spinner_size = 36
+text_color_light = "#9BA1AC"
+text_color_dark = "#9BA1AC"
+# перший запуск після встановлення/оновлення розпаковує застосунок — це довше звичайного
+prepare_message = "Готую нову версію… Перший запуск після оновлення може тривати до хвилини"

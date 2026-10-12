@@ -42,12 +42,14 @@ const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 function cleanHistory(h) {
   if (!h || typeof h !== "object" || typeof h.url !== "string" || !h.url.startsWith("https://"))
     return null;
-  return {
+  const out = {
     url: str(h.url, 300), title: str(h.title, 200), orig: str(h.orig, 200),
     poster: str(h.poster, 400), age: str(h.age, 10), season: str(h.season, 80),
     label: str(h.label, 120), si: num(h.si), ei: num(h.ei), voice: str(h.voice, 80),
     pos: num(h.pos), dur: num(h.dur), ts: num(h.ts),
   };
+  if (h.removed) out.removed = true;  // прибрано з «Продовжити перегляд» на одному з пристроїв
+  return out;
 }
 
 function cleanFavorite(f) {

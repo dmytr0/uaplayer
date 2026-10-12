@@ -164,6 +164,7 @@ while kill -0 {pid} 2>/dev/null; do sleep 0.5; done
 rm -rf "{old}.old"
 mv "{old}" "{old}.old" && mv "{new_app}" "{old}" && rm -rf "{old}.old" || mv "{old}.old" "{old}"
 xattr -dr com.apple.quarantine "{old}" 2>/dev/null
+sleep 1
 {'open "' + old + '"' if relaunch else ''}
 rm -rf "{work}"
 ''')

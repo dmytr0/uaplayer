@@ -1,15 +1,28 @@
 """Дизайн-токени та повторно використовувані компоненти."""
 import flet as ft
 
+import appearance
+
 # ───────────── палітра ─────────────
-BG = "#0D0E12"
-SURFACE = "#15171C"
-SURFACE_2 = "#1C1F26"
-SURFACE_3 = "#262A33"
-BORDER = "#14FFFFFF"
-TEXT = "#F3F4F6"
-MUTED = "#9BA1AC"
-ACCENT = "#FF6A3D"
+LIGHT = appearance.CURRENT["theme"] == "light"
+if LIGHT:
+    BG = "#F2F3F5"
+    SURFACE = "#FFFFFF"
+    SURFACE_2 = "#FFFFFF"
+    SURFACE_3 = "#ECEEF2"
+    BORDER = "#1F000000"
+    TEXT = "#15171C"
+    MUTED = "#5F6672"
+    ACCENT = "#EE5A2C"  # трохи темніший — контрастніший на білому
+else:
+    BG = "#0D0E12"
+    SURFACE = "#15171C"
+    SURFACE_2 = "#1C1F26"
+    SURFACE_3 = "#262A33"
+    BORDER = "#14FFFFFF"
+    TEXT = "#F3F4F6"
+    MUTED = "#9BA1AC"
+    ACCENT = "#FF6A3D"
 ACCENT_2 = "#FFB547"
 GOLD = "#F5C518"
 
@@ -29,7 +42,8 @@ ACCENT_GRADIENT = ft.LinearGradient(
 def theme():
     return ft.Theme(
         color_scheme_seed=ACCENT,
-        color_scheme=ft.ColorScheme(primary=ACCENT, surface=BG, on_surface=TEXT),
+        color_scheme=ft.ColorScheme(primary=ACCENT, surface=BG, on_surface=TEXT,
+                                    on_surface_variant=MUTED),
         page_transitions=ft.PageTransitionsTheme(
             macos=ft.PageTransitionTheme.FADE_FORWARDS,
             windows=ft.PageTransitionTheme.FADE_FORWARDS,
@@ -63,7 +77,7 @@ def pill(text, icon=None, color=MUTED, bg=SURFACE_2, icon_color=None, bold=False
 def glass_button(icon, on_click, tooltip=None, size=38, blur=True):
     """Кругла напівпрозора кнопка поверх зображень."""
     c = ft.Container(
-        ft.Icon(icon, size=18, color=TEXT),
+        ft.Icon(icon, size=18, color="#FFFFFF"),  # поверх фото / темного кола — завжди біла
         width=size, height=size, border_radius=size / 2,
         bgcolor=ft.Colors.with_opacity(0.45, "#000000"),
         border=ft.Border.all(1, BORDER),
