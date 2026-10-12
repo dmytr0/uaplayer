@@ -94,19 +94,28 @@ class MainActivity : FlutterFragmentActivity() {
     private fun handleInstallIntent(intent: Intent?): Boolean {
         val data = intent?.data ?: return false
         if (data.scheme != "uafixupdate") return false
-        val apk = File(cacheDir, "update.apk")
-        if (!apk.isFile) return true
+        // update.apk кладе Python-частина в кеш (запасні варіанти — дані застосунку)
+        val apk = listOf(cacheDir, filesDir)
+            .map { File(it, "update.apk") }.firstOrNull { it.isFile } ?: return true
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
-            // спершу дозволити цьому застосунку встановлювати програми
-            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                                 Uri.parse("package:$packageName")))
-            return true
+            // спершу дозволити цьому застосунку встановлювати програми; на частині Android TV
+            // такого екрана налаштувань немає — тоді одразу до встановлення (система сама
+            // запитає дозвіл)
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                     Uri.parse("package:$packageName")))
+                return true
+            } catch (e: Exception) {
+            }
         }
-        val uri = FileProvider.getUriForFile(this, "$packageName.provider", apk)
-        startActivity(Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "application/vnd.android.package-archive")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-        })
+        try {
+            val uri = FileProvider.getUriForFile(this, "$packageName.provider", apk)
+            startActivity(Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+        } catch (e: Exception) {
+        }
         return true
     }
 }

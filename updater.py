@@ -59,7 +59,10 @@ def android_abi():
 def asset_for(release, platform_name, tv=False):
     """Посилання на файл саме для цього пристрою (або None)."""
     if platform_name == "android":
-        name = f"UAFix-Player-{'AndroidTV' if tv else 'Android'}-{android_abi()}.apk"
+        kind = "AndroidTV" if tv else "Android"
+        name = f"UAFix-Player-{kind}-{android_abi()}.apk"
+        # 32-бітна версія працює на будь-якому ARM-процесорі — запасний варіант
+        return release["assets"].get(name) or release["assets"].get(f"UAFix-Player-{kind}-armv7.apk")
     elif platform_name == "macos":
         name = "UAFix-Player-macOS.zip"
     elif platform_name == "windows":
