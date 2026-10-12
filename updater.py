@@ -138,6 +138,26 @@ def desktop_target(platform_name):
                              os.W_OK) else None
 
 
+def _data_dir():
+    import os
+    return os.environ.get("FLET_APP_STORAGE_DATA") or os.path.expanduser("~")
+
+
+def started_marker():
+    """Файл-позначка «застосунок справді запустився» — його пише main при старті, а скрипт
+    оновлення за ним перевіряє, чи нова версія не зависла на першому запуску."""
+    import os
+    return os.path.join(_data_dir(), ".uafix_started")
+
+
+def mark_started():
+    try:
+        with open(started_marker(), "w") as f:
+            f.write("1")
+    except Exception:
+        pass
+
+
 def install_desktop(zip_path, platform_name, target=None, relaunch=True):
     """Розпаковує оновлення й запускає заміну після виходу застосунку. Після виклику
     застосунок має завершитись (скрипт чекає на це)."""
@@ -150,6 +170,8 @@ def install_desktop(zip_path, platform_name, target=None, relaunch=True):
         raise RuntimeError("немає доступу до теки застосунку")
     work = tempfile.mkdtemp(prefix="uafix-update-")
     pid = os.getpid()
+    marker = started_marker()
+    log = os.path.join(_data_dir(), ".uafix_update.log")
     if platform_name == "macos":
         # ditto, а не zipfile: зберігає права на виконання й символьні посилання в .app
         subprocess.run(["/usr/bin/ditto", "-x", "-k", zip_path, work], check=True)
@@ -159,13 +181,30 @@ def install_desktop(zip_path, platform_name, target=None, relaunch=True):
         new_app, old = apps[0], target
         script = os.path.join(work, "update.sh")
         with open(script, "w") as f:
+            # Після заміни — запуск; якщо за 25 с нова версія не відзвітувала про старт
+            # (позначка), закриваємо її й відкриваємо ще раз: перший запуск після оновлення
+            # інколи зависав на екрані завантаження, а повторний проходив нормально
+            relaunch_cmd = f'''
+rm -f "{marker}"
+open "{old}"
+i=0
+while [ $i -lt 50 ] && [ ! -f "{marker}" ]; do sleep 0.5; i=$((i+1)); done
+if [ ! -f "{marker}" ]; then
+  echo "$(date) no start marker, relaunching" >> "{log}"
+  pkill -f "{old}/Contents/MacOS/" ; sleep 2
+  open "{old}"
+fi''' if relaunch else ""
             f.write(f'''#!/bin/sh
+echo "$(date) update start" >> "{log}"
 while kill -0 {pid} 2>/dev/null; do sleep 0.5; done
+sleep 2
 rm -rf "{old}.old"
 mv "{old}" "{old}.old" && mv "{new_app}" "{old}" && rm -rf "{old}.old" || mv "{old}.old" "{old}"
 xattr -dr com.apple.quarantine "{old}" 2>/dev/null
+echo "$(date) replaced" >> "{log}"
 sleep 1
-{'open "' + old + '"' if relaunch else ''}
+{relaunch_cmd}
+echo "$(date) done" >> "{log}"
 rm -rf "{work}"
 ''')
         subprocess.Popen(["/bin/sh", script], start_new_session=True,
@@ -184,11 +223,31 @@ rm -rf "{work}"
             src = os.path.dirname(found[0])
         script = os.path.join(work, "update.bat")
         with open(script, "w", encoding="utf-8") as f:
+            name = os.path.basename(exe)
+            relaunch_cmd = f'''
+del "{marker}" 2>nul
+start "" "{exe}"
+set /a n=0
+:waitstart
+if exist "{marker}" goto started
+set /a n+=1
+if %n% geq 25 goto restart
+timeout /t 1 /nobreak >nul
+goto waitstart
+:restart
+echo %date% %time% no start marker, relaunching>>"{log}"
+taskkill /IM "{name}" /F >nul 2>&1
+timeout /t 2 /nobreak >nul
+start "" "{exe}"
+:started''' if relaunch else ""
             f.write(f'''@echo off
+echo %date% %time% update start>>"{log}"
 :wait
 tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul && (timeout /t 1 /nobreak >nul & goto wait)
+timeout /t 2 /nobreak >nul
 robocopy "{src}" "{target}" /E /R:10 /W:1 /NFL /NDL /NJH /NJS >nul
-{'start "" "' + exe + '"' if relaunch else ''}
+echo %date% %time% replaced>>"{log}"
+{relaunch_cmd}
 ''')
         flags = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED | NEW_GROUP | NO_WINDOW
         subprocess.Popen(["cmd", "/c", script], creationflags=flags, close_fds=True,

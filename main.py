@@ -589,6 +589,7 @@ def main(page: ft.Page):
         await open_settings()
 
     async def startup():
+        updater.mark_started()  # для скрипта оновлення: нова версія запустилась
         await load_settings()
         page.run_task(sync_now, True, True)  # при запуску — без спливаючого повідомлення
         page.run_task(sync_loop)
