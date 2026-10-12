@@ -251,9 +251,18 @@ def main(page: ft.Page):
                                  shape=ft.CircleBorder()))
 
     prefs = ft.SharedPreferences()
+
+    # Телефон: положення пристрою за акселерометром — повернули горизонтально, і відео на весь
+    # екран, назад вертикально — вихід (працює й тоді, коли сам інтерфейс у повному екрані
+    # зафіксовано горизонтально). Датчик вмикається лише в плеєрі.
+    orient = {"cb": None}
+    accel = ft.Accelerometer(
+        enabled=False, interval=ft.Duration(milliseconds=400),
+        on_reading=lambda e: orient["cb"] and orient["cb"](e.x, e.y)) if is_mobile else None
     # fit "auto": на телефоні в повному екрані — «Заповнити»; quality: "1080" / "720" / "480"
     settings = {"sub_scale": 1.0, "fit": "auto", "skipped_version": "",
-                "auto_updates": True, "keep_history": True, "quality": "1080"}
+                "auto_updates": True, "keep_history": True, "quality": "1080",
+                "auto_fullscreen": True}  # телефон: поворот — повний екран
 
     # Історія переглядів: [{url, title, orig, poster, age, season, label, si, ei, voice,
     # pos, dur, ts}] — найновіше першим. Позиція (pos) і тривалість (dur) — у мілісекундах.
@@ -315,6 +324,11 @@ def main(page: ft.Page):
 
         def update(e):
             page.pop_dialog()
+            if platform_name in ("macos", "windows") and url != rel["url"] and \
+                    updater.desktop_target(platform_name):
+                # Mac / Windows: завантаження в застосунку й автоматичний перезапуск
+                page.run_task(download_and_install, url, rel["version"])
+                return
             if platform_name == "android":
                 if update_dir() and url != rel["url"]:
                     # Android: завантажуємо самі (у фоні) й одразу відкриваємо вікно встановлення —
@@ -374,7 +388,12 @@ def main(page: ft.Page):
         return None
 
     async def download_and_install(url, version):
-        dest = os.path.join(update_dir(), "update.apk")
+        desktop = platform_name in ("macos", "windows")
+        if desktop:
+            import tempfile
+            dest = os.path.join(tempfile.gettempdir(), "uafix-update.zip")
+        else:
+            dest = os.path.join(update_dir(), "update.apk")
         bar = ft.ProgressBar(value=None, color=ACCENT, bgcolor=SURFACE_2, bar_height=6,
                              border_radius=3, width=dialog_width())
         label = ft.Text("Підключаюсь…", color=MUTED, size=13)
@@ -421,6 +440,9 @@ def main(page: ft.Page):
             page.pop_dialog()
         except Exception:
             pass
+        if desktop:
+            await install_desktop_update(dest, version, url)
+            return
         # вікно на випадок, якщо Android спершу попросить дозволити встановлення програм:
         # після дозволу достатньо повернутись і натиснути «Встановити»
         show_dialog(ft.AlertDialog(
@@ -439,6 +461,29 @@ def main(page: ft.Page):
             ],
         ))
         await launch_installer()
+
+    async def install_desktop_update(zip_path, version, url):
+        """Mac / Windows: розпакувати й перезапустити застосунок уже новою версією."""
+        show_dialog(ft.AlertDialog(
+            modal=True, title=ft.Text(f"Встановлюю версію {version}", weight=ft.FontWeight.W_800),
+            bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
+            content=ft.Row([ft.ProgressRing(width=20, height=20, stroke_width=2, color=ACCENT),
+                            ft.Text("Застосунок закриється й відкриється знову вже оновленим.",
+                                    color=TEXT, size=14, expand=True)],
+                           spacing=14, width=dialog_width())))
+        try:
+            await asyncio.to_thread(updater.install_desktop, zip_path, platform_name)
+        except Exception as ex:
+            page.pop_dialog()
+            toast(f"Не вдалося встановити ({ex}) — відкриваю завантаження в браузері",
+                  ft.Icons.ERROR_OUTLINE_ROUNDED)
+            await ft.UrlLauncher().launch_url(url, mode=ft.LaunchMode.EXTERNAL_APPLICATION)
+            return
+        await asyncio.sleep(0.8)
+        try:
+            await page.window.destroy()
+        finally:
+            os._exit(0)  # скрипт заміни чекає саме на завершення процесу
 
     async def show_whats_new():
         """Перший запуск нової версії — коротко, що змінилось."""
@@ -1744,7 +1789,7 @@ def main(page: ft.Page):
             ))
 
         def reset_settings(e):
-            for key, value in (("sub_scale", 1.0), ("fit", "auto"), ("quality", "1080"),
+            for key, value in (("sub_scale", 1.0), ("fit", "auto"), ("quality", "1080"), ("auto_fullscreen", True),
                                ("auto_updates", True),
                                ("keep_history", True), ("skipped_version", "")):
                 save_setting(key, value)
@@ -1832,6 +1877,9 @@ def main(page: ft.Page):
                     "Якщо такої немає — найближча нижча. Можна змінити й під час перегляду",
                     trailing=choice("quality", [("1080p", "1080"), ("720p", "720"),
                                                 ("480p", "480")])),
+                *([row(ft.Icons.SCREEN_ROTATION_ROUNDED, "Повний екран при повороті",
+                       "Поверніть телефон горизонтально — відео на весь екран",
+                       trailing=switch("auto_fullscreen"))] if is_mobile else []),
                 row(ft.Icons.ASPECT_RATIO_ROUNDED, "Масштаб на весь екран",
                     "Авто: на телефоні — заповнити, на комп'ютері — вписати",
                     trailing=choice("fit", fit_options)),
@@ -2501,6 +2549,13 @@ def main(page: ft.Page):
             refresh_bar()
             page.update()
 
+        def set_fit(mode):
+            save_setting("fit", mode)
+            video.fit = fit_value(st.get("fullscreen", False))
+            refresh_fit_button()
+            refresh_bar()
+            page.update()
+
         def cycle_fit(e=None):
             keys = [k for k, _, _ in FIT_MODES]
             mode = keys[(keys.index(current_fit_mode()) + 1) % len(keys)]
@@ -2548,7 +2603,7 @@ def main(page: ft.Page):
                 ft.Text(text, size=12, weight=ft.FontWeight.W_800, color=TEXT),
                 width=width, height=24, border_radius=6, alignment=ft.Alignment.CENTER,
                 border=ft.Border.all(1.6, TEXT), opacity=1 if bright else 0.4,
-                margin=6,
+                margin=2 if is_mobile else 6,
             )
 
         def menu_item(text, checked, on_click):
@@ -2630,6 +2685,10 @@ def main(page: ft.Page):
         tv_voice_btn = tv_menu_button("Озвучка", "voice_opts")
         tv_sub_btn = tv_menu_button("Субтитри", "sub_opts")
         quality_menu = ft.PopupMenuButton(tooltip="Якість", **menu_style)
+        # телефон: якість і масштаб — в одному меню (на вузькому екрані все окремими кнопками
+        # не вміщалося, і крайні виходили за край)
+        more_menu = ft.PopupMenuButton(icon=ft.Icons.TUNE_ROUNDED, icon_color="#FFFFFF",
+                                       tooltip="Якість і масштаб", **menu_style)
         tv_quality_btn = tv_menu_button("Якість", "quality_opts")
 
         def current_quality():
@@ -2682,6 +2741,10 @@ def main(page: ft.Page):
                       for k in sorted(variants, key=int, reverse=True)]
             quality_menu.content = quality_badge()
             quality_menu.items = [menu_item(t, c, a) for t, c, a in q_opts]
+            more_menu.items = [menu_item(f"Якість: {t}", c, a) for t, c, a in q_opts] + \
+                ([ft.PopupMenuItem()] if q_opts else []) + [
+                menu_item(f"Масштаб: {n.lower()}", current_fit_mode() == k,
+                          lambda e, k=k: set_fit(k)) for k, n, _ in FIT_MODES]
             p["quality_opts"] = q_opts
             tv_quality_btn.icon = quality_badge()
             tv_voice_btn.icon = badge(voice_code(cur_voice))
@@ -2998,7 +3061,8 @@ def main(page: ft.Page):
         # Панель плеєра будується один раз: кнопки, яких не було в ній від початку (або з
         # visible=False), плеєр уже не покаже. Тому — постійні «слоти», у які кнопку
         # вставляємо чи прибираємо; зміни вмісту слотів доходять до екрана.
-        prev_slot, next_slot, voice_slot, sub_slot, quality_slot = (ft.Container() for _ in range(5))
+        prev_slot, next_slot, voice_slot, sub_slot, quality_slot, more_slot = \
+            (ft.Container() for _ in range(6))
         fit_btn = bar_button(ft.Icons.ASPECT_RATIO_ROUNDED, "Масштаб", cycle_fit)
         cast_btn = bar_button(ft.Icons.CAST_ROUNDED, "Транслювати на телевізор",
                               lambda e: page.run_task(open_cast))
@@ -3013,6 +3077,7 @@ def main(page: ft.Page):
                                 if entries[p["idx"]].get("subs") else None)
             quality_slot.content = ((tv_quality_btn if TV else quality_menu)
                                     if core._VARIANTS.get(entries[p["idx"]]["url"]) else None)
+            more_slot.content = more_menu
 
         style = dict(seek_bar_position_color=ACCENT, seek_bar_thumb_color=ACCENT,
                      automatically_imply_skip_next_button=False,
@@ -3182,19 +3247,25 @@ def main(page: ft.Page):
                 style,
                 # таймлайн не впритул до країв екрана (особливо в повноекранному режимі)
                 seek_bar_margin=ft.Padding.only(left=24, right=24, bottom=18),
-                bottom_button_bar_margin=ft.Padding.only(left=16, right=16, bottom=22),
                 # без перемотки подвійним тапом: її бічні зони «з'їдали» звичайний тап, і панель
                 # відкривалась лише з центру екрана; ±10 с — кнопками поруч із ▶/⏸
                 seek_on_double_tap=False,
+                # попередня / наступна серія — у центрі, поруч із ±10 с і ▶/⏸
                 primary_button_bar=[
+                    prev_slot, ft.Container(width=12),
                     ft.IconButton(ft.Icons.REPLAY_10_ROUNDED, icon_size=36, icon_color="#FFFFFF",
                                   tooltip="Назад на 10 с",
                                   on_click=lambda e: page.run_task(seek_by, -10)),
-                    ft.Container(width=28), fv.VideoPlayOrPauseButton(icon_size=56), ft.Container(width=28),
+                    ft.Container(width=20), fv.VideoPlayOrPauseButton(icon_size=56), ft.Container(width=20),
                     ft.IconButton(ft.Icons.FORWARD_10_ROUNDED, icon_size=36, icon_color="#FFFFFF",
                                   tooltip="Вперед на 10 с",
                                   on_click=lambda e: page.run_task(seek_by, 10)),
+                    ft.Container(width=12), next_slot,
                 ],
+                # знизу — лише те, що вміщається на вузькому екрані (▶/⏸ уже по центру)
+                bottom_button_bar=[fv.VideoPositionIndicator(), fv.VideoSpacer(), voice_slot,
+                                   sub_slot, more_slot, cast_btn, fv.VideoFullscreenButton()],
+                bottom_button_bar_margin=ft.Padding.only(left=8, right=8, bottom=22),
             )
             video.controls = fv.AdaptiveVideoControls(
                 material=fv.MaterialVideoControls(**mobile_style) if is_mobile else None,
@@ -3304,6 +3375,34 @@ def main(page: ft.Page):
 
         video.on_enter_fullscreen = lambda e: fullscreen(True)
         video.on_exit_fullscreen = lambda e: fullscreen(False)
+
+        if accel is not None:
+            o = {"state": None, "count": 0}
+
+            def on_orient(x, y):
+                if not alive():
+                    orient["cb"] = None
+                    accel.enabled = False
+                    accel.update()
+                    return
+                s_ = "land" if abs(x) > 7 and abs(y) < 5 else "port" if abs(y) > 7 and abs(x) < 5 \
+                    else None
+                if s_ is None:
+                    return  # лежить на столі чи нахилений — нічого не робимо
+                o["count"] = o["count"] + 1 if s_ == o["state"] else 1
+                o["state"] = s_
+                # лише в момент повороту (два однакові заміри поспіль): ручний вхід/вихід
+                # кнопкою, поки телефон не повертали, не скасовується
+                if o["count"] != 2 or not settings["auto_fullscreen"] or p.get("cast"):
+                    return
+                want = s_ == "land"
+                if want != bool(st.get("fullscreen")):
+                    video.fullscreen = want
+                    video.update()
+
+            orient["cb"] = on_orient
+            accel.enabled = True
+            accel.update()
         st["video"] = video
         bar = drag_area(ft.Container(
             ft.Row([

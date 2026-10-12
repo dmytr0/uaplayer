@@ -89,3 +89,106 @@ def download(url, dest, progress=lambda done, total: None, chunk=256 * 1024):
         raise IOError(f"завантажено {done} з {total} байт")
     os.replace(tmp, dest)
     return dest
+
+
+# ── оновлення на Mac і Windows: завантажений архів розпаковується, а маленький скрипт
+#    після закриття застосунку замінює стару версію новою й запускає її
+
+
+def _exe_path():
+    """Шлях до виконуваного файлу застосунку (Python працює всередині нього)."""
+    import ctypes
+    import os
+    import sys
+    try:
+        if sys.platform == "darwin":
+            buf = ctypes.create_string_buffer(4096)
+            size = ctypes.c_uint32(len(buf))
+            if ctypes.CDLL(None)._NSGetExecutablePath(buf, ctypes.byref(size)) == 0:
+                return os.path.realpath(buf.value.decode())
+        elif sys.platform == "win32":
+            buf = ctypes.create_unicode_buffer(32768)
+            if ctypes.windll.kernel32.GetModuleFileNameW(None, buf, len(buf)):
+                return buf.value
+    except Exception:
+        pass
+    return sys.executable
+
+
+def desktop_target(platform_name):
+    """Що замінювати: теку застосунку .app (Mac) чи теку з .exe (Windows); None — не можна
+    (запуск не зі збірки, або немає прав на запис — тоді оновлення через браузер)."""
+    import os
+    exe = _exe_path() or ""
+    if os.path.basename(exe).lower().startswith("python") or "python.framework" in exe.lower():
+        return None  # запуск звичайним Python (розробка), а не зібраний застосунок
+    if platform_name == "macos":
+        path = exe
+        while path and path != "/" and not path.endswith(".app"):
+            path = os.path.dirname(path)
+        if not path.endswith(".app") or "/flet-desktop" in path or "Flet.app" in path:
+            return None  # версія для розробки (клієнт Flet), а не зібраний застосунок
+    elif platform_name == "windows":
+        if not exe.lower().endswith(".exe") or os.path.basename(exe).lower().startswith("python"):
+            return None
+        path = os.path.dirname(exe)
+    else:
+        return None
+    return path if os.access(os.path.dirname(path) if platform_name == "macos" else path,
+                             os.W_OK) else None
+
+
+def install_desktop(zip_path, platform_name, target=None, relaunch=True):
+    """Розпаковує оновлення й запускає заміну після виходу застосунку. Після виклику
+    застосунок має завершитись (скрипт чекає на це)."""
+    import glob
+    import os
+    import subprocess
+    import tempfile
+    target = target or desktop_target(platform_name)
+    if not target:
+        raise RuntimeError("немає доступу до теки застосунку")
+    work = tempfile.mkdtemp(prefix="uafix-update-")
+    pid = os.getpid()
+    if platform_name == "macos":
+        # ditto, а не zipfile: зберігає права на виконання й символьні посилання в .app
+        subprocess.run(["/usr/bin/ditto", "-x", "-k", zip_path, work], check=True)
+        apps = glob.glob(os.path.join(work, "*.app"))
+        if not apps:
+            raise RuntimeError("в архіві немає застосунку")
+        new_app, old = apps[0], target
+        script = os.path.join(work, "update.sh")
+        with open(script, "w") as f:
+            f.write(f'''#!/bin/sh
+while kill -0 {pid} 2>/dev/null; do sleep 0.5; done
+rm -rf "{old}.old"
+mv "{old}" "{old}.old" && mv "{new_app}" "{old}" && rm -rf "{old}.old" || mv "{old}.old" "{old}"
+xattr -dr com.apple.quarantine "{old}" 2>/dev/null
+{'open "' + old + '"' if relaunch else ''}
+rm -rf "{work}"
+''')
+        subprocess.Popen(["/bin/sh", script], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        import zipfile
+        with zipfile.ZipFile(zip_path) as z:
+            z.extractall(work)
+        exe = _exe_path()
+        src = work
+        if not os.path.exists(os.path.join(src, os.path.basename(exe))):
+            # архів міг містити ще одну теку всередині
+            found = glob.glob(os.path.join(work, "*", os.path.basename(exe)))
+            if not found:
+                raise RuntimeError("в архіві немає застосунку")
+            src = os.path.dirname(found[0])
+        script = os.path.join(work, "update.bat")
+        with open(script, "w", encoding="utf-8") as f:
+            f.write(f'''@echo off
+:wait
+tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul && (timeout /t 1 /nobreak >nul & goto wait)
+robocopy "{src}" "{target}" /E /R:10 /W:1 /NFL /NDL /NJH /NJS >nul
+{'start "" "' + exe + '"' if relaunch else ''}
+''')
+        flags = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED | NEW_GROUP | NO_WINDOW
+        subprocess.Popen(["cmd", "/c", script], creationflags=flags, close_fds=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
