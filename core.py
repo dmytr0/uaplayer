@@ -374,6 +374,51 @@ def stream_headers(entry):
     return {"Referer": entry["referer"], "Origin": f"{p.scheme}://{p.netloc}", "User-Agent": UA}
 
 
+_VARIANTS = {}  # посилання на потік → {"1080": посилання на цю якість, …}
+
+
+def hls_variants(entry):
+    """Якості HLS-потоку серії (з головного плейлиста сервера): {"1080": url, "720": url, …}.
+    Порожньо, якщо сервер віддає одну якість. Результат кешується."""
+    url = entry["url"]
+    if url in _VARIANTS:
+        return _VARIANTS[url]
+    variants = {}
+    try:
+        r = _session.get(url, headers=stream_headers(entry), timeout=10, **IMPERSONATE)
+        lines = r.text.splitlines() if r.status_code == 200 else []
+        for i, line in enumerate(lines):
+            m = re.search(r"RESOLUTION=\d+x(\d+)", line)
+            if line.startswith("#EXT-X-STREAM-INF") and i + 1 < len(lines):
+                link = urljoin(url, lines[i + 1].strip())
+                # назва якості — з адреси (…/720/index.m3u8), інакше з висоти кадру
+                name = re.search(r"/(\d{3,4})p?/[^/]*$", link)
+                key = name.group(1) if name else (m.group(1) if m else None)
+                if key:
+                    variants[key] = link
+    except Exception:
+        return {}  # не кешуємо: можливо, тимчасова помилка мережі
+    _VARIANTS[url] = variants if len(variants) > 1 else {}
+    return _VARIANTS[url]
+
+
+def pick_quality(variants, quality):
+    """Наявна якість, найближча до бажаної: така сама, нижча або (якщо нижчих нема) найнижча."""
+    if quality in variants:
+        return quality
+    keys = sorted(variants, key=int, reverse=True)
+    lower = [k for k in keys if int(k) <= int(quality)]
+    return lower[0] if lower else keys[-1]
+
+
+def quality_url(url, quality):
+    """Посилання на потік потрібної якості; якщо сервер віддає одну якість — як є."""
+    variants = _VARIANTS.get(url)
+    if not variants:
+        return url
+    return variants[pick_quality(variants, quality)]
+
+
 def build_m3u(entries, show=""):
     lines = ["#EXTM3U"]
     for i, e in enumerate(entries, 1):

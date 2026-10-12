@@ -74,6 +74,10 @@ jobs:
       # з тегу v1.2.3 → 1.2.3, інакше — з pyproject.toml
       - name: App version
         shell: python
+        # токен бота для «Повідомити про проблему» (секрети репозиторію; без них — форма GitHub)
+        env:
+          FEEDBACK_BOT_TOKEN: ${{ secrets.FEEDBACK_BOT_TOKEN }}
+          FEEDBACK_CHAT_ID: ${{ secrets.FEEDBACK_CHAT_ID }}
         run: |
           import os, re
           ref = os.environ.get("GITHUB_REF_NAME", "")
@@ -81,7 +85,10 @@ jobs:
               version = ref[1:]
           else:
               version = re.search(r'^version\s*=\s*"([^"]+)"', open("pyproject.toml", encoding="utf-8").read(), re.M).group(1)
-          open("app_version.py", "w", encoding="utf-8").write(f'VERSION = "{version}"\n')
+          with open("app_version.py", "w", encoding="utf-8") as f:
+              f.write(f'VERSION = "{version}"\n')
+              f.write(f'FEEDBACK_BOT_TOKEN = {os.environ.get("FEEDBACK_BOT_TOKEN", "")!r}\n')
+              f.write(f'FEEDBACK_CHAT_ID = {os.environ.get("FEEDBACK_CHAT_ID", "")!r}\n')
           with open(os.environ["GITHUB_ENV"], "a") as f:
               f.write(f"APP_VERSION={version}\n")
           print("version:", version)

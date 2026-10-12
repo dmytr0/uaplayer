@@ -5,6 +5,8 @@
 Flet потрібної версії й замінює MainActivity: та обирає режим дисплея з найбільшою частотою
 (за тієї ж роздільності) — 90/120/144 Гц, якщо екран їх підтримує.
 
+MainActivity також тримає MulticastLock — для пошуку Chromecast у Wi-Fi.
+
 Також MainActivity відкриває системне вікно встановлення для завантаженого застосунком
 оновлення (посилання uafixupdate://install, файл cache/update.apk).
 
@@ -23,8 +25,10 @@ TEMPLATE_URL = "https://github.com/flet-dev/flet/releases/download/v{v}/flet-bui
 
 MAIN_ACTIVITY = '''package {{ cookiecutter.org_name_2 }}.{{ cookiecutter.package_name }}
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -33,10 +37,26 @@ import io.flutter.embedding.android.FlutterFragmentActivity
 import java.io.File
 
 class MainActivity : FlutterFragmentActivity() {
+    private var multicastLock: WifiManager.MulticastLock? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestHighRefreshRate()
         handleInstallIntent(intent)
+        // без цього Android відкидає multicast-пакети, і пошук Chromecast (mDNS) нічого не бачить
+        try {
+            val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            multicastLock = wifi.createMulticastLock("uafix-cast").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (e: Exception) {
+        }
+    }
+
+    override fun onDestroy() {
+        multicastLock?.let { if (it.isHeld) it.release() }
+        super.onDestroy()
     }
 
     override fun onResume() {

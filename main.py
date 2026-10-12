@@ -19,7 +19,9 @@ from urllib.parse import urlencode, urlparse
 import flet as ft
 import flet_video as fv
 
+import cast as uafix_cast
 import core
+import feedback
 import ui
 import updater
 from ui import ACCENT, BG, BORDER, MUTED, SURFACE, SURFACE_2, SURFACE_3, TEXT
@@ -48,6 +50,32 @@ NAV = [
     ]),
 ]
 DESTINATIONS = [d for _, items in NAV for d in items]
+
+# жанри — окремі розділи сайту; показуються рядком над каталогом «Усі фільми» / «Усі серіали»
+GENRES = {
+    "/films/": ("Фільми", [
+        ("Бойовики", "/films/action/"), ("Комедії", "/films/comedy/"),
+        ("Жахи", "/films/films_horror/"), ("Фантастика", "/films/fantastics/"),
+        ("Мелодрами та драми", "/films/melodrama/"), ("Про кохання", "/films/love_films/"),
+        ("Для підлітків", "/films/teen_films/"), ("Про школу", "/films/school_films/"),
+        ("Документальні", "/films/documental_films/"),
+    ]),
+    "/serials/": ("Серіали", [
+        ("Комедійні", "/serials/comedy_serials/"), ("Детективні", "/serials/detective/"),
+        ("Фантастика", "/serials/fantastichni_serialy/"), ("Фентезі", "/serials/fantasy_serialy/"),
+        ("Історичні", "/serials/history_serials/"), ("Жахи", "/serials/horror_serials/"),
+        ("Про кохання", "/serials/pro_love/"), ("Про підлітків", "/serials/pro_pidlitkiv/"),
+        ("Про школу", "/serials/school/"), ("Документальні", "/serials/documental/"),
+    ]),
+}
+
+
+def genre_root(path):
+    """Розділ із жанрами, до якого належить path (сам розділ чи один із його жанрів)."""
+    for root, (_, genres) in GENRES.items():
+        if path == root or any(g == path for _, g in genres):
+            return root
+    return None
 
 # полички під банером на головній: (назва, розділ)
 SHELVES = [
@@ -176,8 +204,9 @@ def main(page: ft.Page):
                                  shape=ft.CircleBorder()))
 
     prefs = ft.SharedPreferences()
+    # fit "auto": на телефоні в повному екрані — «Заповнити»; quality: "1080" / "720" / "480"
     settings = {"sub_scale": 1.0, "fit": "auto", "skipped_version": "",
-                "auto_updates": True, "keep_history": True}  # fit "auto": на телефоні в повному екрані — «Заповнити»
+                "auto_updates": True, "keep_history": True, "quality": "1080"}
 
     # Історія переглядів: [{url, title, orig, poster, age, season, label, si, ei, voice,
     # pos, dur, ts}] — найновіше першим. Позиція (pos) і тривалість (dur) — у мілісекундах.
@@ -190,6 +219,8 @@ def main(page: ft.Page):
                 value = await prefs.get(key)
                 if value is not None:
                     settings[key] = value
+            if settings["quality"] not in ("1080", "720", "480"):
+                settings["quality"] = "1080"  # «Авто» з попередньої версії — найкраща якість
             raw = await prefs.get("history")
             if raw:
                 history[:] = json.loads(raw)
@@ -559,9 +590,48 @@ def main(page: ft.Page):
         clear_btn.visible = False
         set_heading(name)
         st["mode"] = ("cat", path)
-        idx = next((i for i, d in enumerate(DESTINATIONS) if d[1] == path), None)
+        # для жанру в меню підсвічується його розділ («Усі фільми» / «Усі серіали»)
+        nav_path = genre_root(path) or path
+        idx = next((i for i, d in enumerate(DESTINATIONS) if d[1] == nav_path), None)
         drawer.selected_index = idx + 1 if idx is not None else None
         await reload()
+
+    # ── рядок жанрів над каталогом
+    genre_row = ft.Row(spacing=8, scroll=None if TV else ft.ScrollMode.HIDDEN, wrap=TV,
+                       run_spacing=8)
+    genre_bar = ft.Container(genre_row, visible=False,
+                             padding=ft.Padding.only(left=14 if is_mobile else 24, right=14,
+                                                     top=10, bottom=2))
+
+    def genre_chip(label, path, selected):
+        return ft.FilledButton(
+            label, on_click=lambda e: page.run_task(open_category, chip_heading(path), path),
+            style=ft.ButtonStyle(
+                bgcolor={ft.ControlState.FOCUSED: ACCENT if selected else SURFACE_3,
+                         ft.ControlState.HOVERED: ACCENT if selected else SURFACE_3,
+                         ft.ControlState.DEFAULT: ACCENT if selected else SURFACE_2},
+                color="#FFFFFF" if selected else TEXT,
+                side={ft.ControlState.FOCUSED: ft.BorderSide(3, "#FFFFFF"),
+                      ft.ControlState.DEFAULT: ft.BorderSide(1, ACCENT if selected else BORDER)},
+                shape=ft.RoundedRectangleBorder(radius=20),
+                padding=ft.Padding.symmetric(horizontal=16, vertical=10 if TV else 6),
+                text_style=ft.TextStyle(size=16 if TV else 13, weight=ft.FontWeight.W_600),
+                animation_duration=0 if TV else None))
+
+    def chip_heading(path):
+        root = genre_root(path)
+        title, genres = GENRES[root]
+        if path == root:
+            return f"Усі {title.lower()}"
+        return f"{title} · {next(n for n, g in genres if g == path)}"
+
+    def refresh_genre_bar():
+        path = st["mode"][1] if st["mode"][0] == "cat" else None
+        root = genre_root(path) if path else None
+        genre_bar.visible = bool(root)
+        if root:
+            genre_row.controls = [genre_chip("Усі", root, path == root)] + [
+                genre_chip(n, g, path == g) for n, g in GENRES[root][1]]
 
     # ═════════════════════ верхня панель ═════════════════════
     subheading = ft.Text("", size=12, color=MUTED, visible=False)
@@ -901,6 +971,7 @@ def main(page: ft.Page):
         return await asyncio.to_thread(lambda: core.parse_catalog(core.fetch(url)))
 
     async def reload():
+        refresh_genre_bar()
         if st["mode"][0] == "home":
             go_home()
             return
@@ -1300,6 +1371,7 @@ def main(page: ft.Page):
 
     def go_home():
         st["mode"] = ("home", None)
+        refresh_genre_bar()
         st["gen"] += 1
         drawer.selected_index = 0
         set_heading("Головна")
@@ -1319,7 +1391,7 @@ def main(page: ft.Page):
 
     home = ft.View(
         route="/", padding=0, bgcolor=BG, drawer=drawer,
-        controls=[safe(ft.Column([top_bar_box, body], expand=True, spacing=0))],
+        controls=[safe(ft.Column([top_bar_box, genre_bar, body], expand=True, spacing=0))],
     )
 
     # «Назад» на головному екрані Android (телефон і TV): з пошуку чи розділу — на головну,
@@ -1405,7 +1477,8 @@ def main(page: ft.Page):
             ))
 
         def reset_settings(e):
-            for key, value in (("sub_scale", 1.0), ("fit", "auto"), ("auto_updates", True),
+            for key, value in (("sub_scale", 1.0), ("fit", "auto"), ("quality", "1080"),
+                               ("auto_updates", True),
                                ("keep_history", True), ("skipped_version", "")):
                 save_setting(key, value)
             pop_view()
@@ -1415,6 +1488,60 @@ def main(page: ft.Page):
         def open_link(url):
             page.run_task(ft.UrlLauncher().launch_url, url,
                           mode=ft.LaunchMode.EXTERNAL_APPLICATION)
+
+        def open_feedback():
+            kind = {"value": "bug"}
+            kinds = ft.SegmentedButton(
+                selected=["bug"], show_selected_icon=False,
+                segments=[ft.Segment(k, label=ft.Text(v)) for k, v in feedback.KINDS.items()],
+                style=ft.ButtonStyle(
+                    shape=ft.RoundedRectangleBorder(radius=10), side=ft.BorderSide(1, BORDER),
+                    bgcolor={ft.ControlState.SELECTED: ft.Colors.with_opacity(0.18, ACCENT),
+                             ft.ControlState.DEFAULT: SURFACE_2},
+                    color={ft.ControlState.SELECTED: ACCENT, ft.ControlState.DEFAULT: TEXT}),
+                on_change=lambda e: kind.update(value=e.control.selected[0]))
+            text = ft.TextField(
+                multiline=True, min_lines=4, max_lines=8, max_length=feedback.MAX_LEN,
+                hint_text="Що сталося? Який фільм / серія, що натискали…", autofocus=not TV,
+                filled=True, fill_color=SURFACE_2, cursor_color=ACCENT, text_size=14,
+                border={ft.ControlState.FOCUSED: ft.OutlineInputBorder(
+                            border_radius=12, side=ft.BorderSide(1.5, ACCENT)),
+                        ft.ControlState.DEFAULT: ft.OutlineInputBorder(
+                            border_radius=12, side=ft.BorderSide(1, BORDER))})
+            sending = ft.ProgressRing(width=18, height=18, stroke_width=2, color=ACCENT,
+                                      visible=False)
+            device = f"{platform_name or page.platform}{' (TV)' if TV else ''}"
+            signature = f"UAFix Player {updater.VERSION} · {device}"
+
+            async def submit(e):
+                send_btn.disabled, sending.visible = True, True
+                dlg.update()
+                try:
+                    await asyncio.to_thread(feedback.send, kind["value"], text.value, signature)
+                except ValueError as ex:
+                    send_btn.disabled, sending.visible = False, False
+                    dlg.update()
+                    toast(str(ex), ft.Icons.ERROR_OUTLINE_ROUNDED)
+                    return
+                page.pop_dialog()
+                toast("Дякую! Повідомлення надіслано", ft.Icons.CHECK_CIRCLE_ROUNDED)
+
+            send_btn = ft.FilledButton("Надіслати", icon=ft.Icons.SEND_ROUNDED, on_click=submit,
+                                       style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF",
+                                                            icon_color="#FFFFFF"))
+            dlg = ft.AlertDialog(
+                title=ft.Text("Повідомити про проблему", weight=ft.FontWeight.W_800),
+                bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18), scrollable=True,
+                content=ft.Column([
+                    kinds, text,
+                    ft.Text(f"До повідомлення додається: {signature}", size=11, color=MUTED),
+                ], tight=True, spacing=12, width=dialog_width()),
+                actions=[sending,
+                         ft.TextButton("Скасувати", on_click=lambda e: page.pop_dialog(),
+                                       style=ft.ButtonStyle(color=MUTED)),
+                         send_btn],
+            )
+            page.show_dialog(dlg)
 
         def issue_url():
             device = f"{platform_name or page.platform}{' (TV)' if TV else ''}"
@@ -1429,6 +1556,10 @@ def main(page: ft.Page):
             section("Відтворення", [
                 row(ft.Icons.SUBTITLES_ROUNDED, "Розмір субтитрів",
                     trailing=choice("sub_scale", SUB_SIZES)),
+                row(ft.Icons.HIGH_QUALITY_ROUNDED, "Якість відео",
+                    "Якщо такої немає — найближча нижча. Можна змінити й під час перегляду",
+                    trailing=choice("quality", [("1080p", "1080"), ("720p", "720"),
+                                                ("480p", "480")])),
                 row(ft.Icons.ASPECT_RATIO_ROUNDED, "Масштаб на весь екран",
                     "Авто: на телефоні — заповнити, на комп'ютері — вписати",
                     trailing=choice("fit", fit_options)),
@@ -1455,8 +1586,10 @@ def main(page: ft.Page):
                 row(ft.Icons.CODE_ROUNDED, "Сторінка проєкту", "GitHub: усі версії й зміни",
                     on_click=lambda e: open_link(f"https://github.com/{updater.REPO}/releases")),
                 row(ft.Icons.BUG_REPORT_OUTLINED, "Повідомити про проблему",
-                    "Відкриє форму на GitHub з даними про версію й пристрій",
-                    on_click=lambda e: open_link(issue_url())),
+                    "Помилка, побажання чи відгук — напряму автору" if feedback.enabled()
+                    else "Відкриє форму на GitHub з даними про версію й пристрій",
+                    on_click=lambda e: open_feedback() if feedback.enabled()
+                    else open_link(issue_url())),
                 row(ft.Icons.RESTART_ALT_ROUNDED, "Скинути налаштування", on_click=reset_settings),
             ]),
             ft.Text(f"UAFix Player {updater.VERSION} · вміст — uafix.net", size=12, color=MUTED,
@@ -1989,6 +2122,17 @@ def main(page: ft.Page):
                 prefix = f"{season['name']} · " if multi else ""
                 everything.append((prefix + e["label"], e))
         show = (ctx["info"] or {}).get("title") or ctx["item"]["title"]
+        # список якостей потрібен одразу: щоб плеєр стартував в обраній якості й показав кнопку
+        first = []
+        for _, e in everything[start:start + 6]:
+            if not e["sources"]:
+                break
+            first.append(pick_source(e, ctx.get("voice", "")))
+        try:
+            await asyncio.wait_for(asyncio.gather(
+                *[asyncio.to_thread(core.hls_variants, x) for x in first]), 5)
+        except Exception:
+            pass
         view = ft.View(route="/play", padding=0, bgcolor="#000000")
         start_pos = ft.Duration(milliseconds=int(start_ms)) if start_ms else None
         view.controls = [safe(build_player(view, ctx, show, everything[start:], ctx.get("voice", ""),
@@ -2007,7 +2151,7 @@ def main(page: ft.Page):
             entries.append(pick_source(ep, voice))
         names = [n if n != "Фільм" else "" for n, _ in queue]
         p = {"idx": 0, "sub_lang": sub_pref,  # None — субтитри вимкнено, інакше мова
-             "voice": voice, "target": start_pos, "extending": False,
+             "voice": voice, "quality": settings["quality"], "target": start_pos, "extending": False,
              "restoring": bool(start_pos and start_pos.in_milliseconds > 3000)}
         voices = all_voices([{"episodes": [ep for _, ep in queue]}])
 
@@ -2069,9 +2213,14 @@ def main(page: ft.Page):
             video.update()
 
         now = ft.Text(names[0], size=12, color=MUTED, visible=bool(names[0]))
+
+        def media(e):
+            return fv.VideoMedia(core.quality_url(e["url"], p["quality"]),
+                                 http_headers=core.stream_headers(e))
+
         video = fv.Video(
             expand=True, autoplay=True, title=show, fill_color="#000000",
-            playlist=[fv.VideoMedia(e["url"], http_headers=core.stream_headers(e)) for e in entries],
+            playlist=[media(e) for e in entries],
             playlist_mode=fv.PlaylistMode.NONE,
             subtitle_track=track(subtitle_for(entries[0])),
             subtitle_configuration=sub_config(),
@@ -2096,11 +2245,11 @@ def main(page: ft.Page):
 
         video.on_error = on_error
 
-        def badge(text, bright=True):
+        def badge(text, bright=True, width=34):
             """Значок у стилі «CC»: текст у рамці; напівпрозорий — вимкнено."""
             return ft.Container(
                 ft.Text(text, size=12, weight=ft.FontWeight.W_800, color=TEXT),
-                width=34, height=24, border_radius=6, alignment=ft.Alignment.CENTER,
+                width=width, height=24, border_radius=6, alignment=ft.Alignment.CENTER,
                 border=ft.Border.all(1.6, TEXT), opacity=1 if bright else 0.4,
                 margin=6,
             )
@@ -2183,6 +2332,15 @@ def main(page: ft.Page):
 
         tv_voice_btn = tv_menu_button("Озвучка", "voice_opts")
         tv_sub_btn = tv_menu_button("Субтитри", "sub_opts")
+        quality_menu = ft.PopupMenuButton(tooltip="Якість", **menu_style)
+        tv_quality_btn = tv_menu_button("Якість", "quality_opts")
+
+        def current_quality():
+            variants = core._VARIANTS.get(entries[p["idx"]]["url"])
+            return core.pick_quality(variants, p["quality"]) if variants else p["quality"]
+
+        def quality_badge():
+            return badge(current_quality(), width=44)
 
         def fill_menus():
             entry = entries[p["idx"]]
@@ -2221,6 +2379,14 @@ def main(page: ft.Page):
                                 abs(float(settings["sub_scale"]) - scale) < 0.01,
                                 lambda e, scale=scale: set_sub_size(scale))
                                for name, scale in SUB_SIZES]]
+            variants = core._VARIANTS.get(entry["url"]) or {}
+            q_opts = [(f"{k}p", current_quality() == k,
+                       lambda e, k=k: page.run_task(switch_quality, k))
+                      for k in sorted(variants, key=int, reverse=True)]
+            quality_menu.content = quality_badge()
+            quality_menu.items = [menu_item(t, c, a) for t, c, a in q_opts]
+            p["quality_opts"] = q_opts
+            tv_quality_btn.icon = quality_badge()
             tv_voice_btn.icon = badge(voice_code(cur_voice))
             tv_sub_btn.icon = badge("CC", bright=current is not None)
 
@@ -2233,8 +2399,7 @@ def main(page: ft.Page):
                     break
                 entries.append(pick_source(ep, p["voice"]))
             p["idx"] = 0
-            video.playlist = [fv.VideoMedia(e["url"], http_headers=core.stream_headers(e))
-                              for e in entries]
+            video.playlist = [media(e) for e in entries]
             video.subtitle_track = track(subtitle_for(entries[0]))
             now.value, now.visible = names[0], bool(names[0])
             refresh_bar()
@@ -2259,6 +2424,226 @@ def main(page: ft.Page):
             del queue[:idx], names[:idx]
             p["voice"] = v
             reload_playlist(pos)
+
+        async def switch_quality(q):
+            # та сама серія в іншій якості — з тієї ж секунди (як і зі зміною озвучки)
+            save_setting("quality", q)
+            if q == p["quality"]:
+                return
+            try:
+                pos = await video.get_current_position()
+            except Exception:
+                pos = None
+            if p["restoring"] or not pos or pos.in_milliseconds <= 0:
+                pos = p["target"] if p["restoring"] else pos
+            idx = p["idx"]
+            before.extend(queue[:idx])
+            del queue[:idx], names[:idx]
+            p["quality"] = q
+            reload_playlist(pos)
+
+        # ── трансляція на Chromecast / Google TV
+        async def open_cast():
+            if p.get("cast"):
+                show_cast_panel()
+                return
+            devices_col = ft.Column([ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2,
+                                                             color=ACCENT),
+                                             ft.Text("Шукаю пристрої в мережі…", color=MUTED)],
+                                            spacing=12)], tight=True, spacing=10,
+                                    width=dialog_width())
+            dlg = ft.AlertDialog(
+                title=ft.Text("Транслювати на", weight=ft.FontWeight.W_800),
+                bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
+                content=devices_col,
+                actions=[ft.TextButton("Скасувати", on_click=lambda e: page.pop_dialog(),
+                                       style=ft.ButtonStyle(color=MUTED))])
+            page.show_dialog(dlg)
+            try:
+                devices = await asyncio.to_thread(uafix_cast.discover)
+            except Exception:
+                devices = []
+            if not devices:
+                devices_col.controls = [
+                    ft.Text("Пристроїв не знайдено.", color=TEXT, weight=ft.FontWeight.W_600),
+                    ft.Text("Телефон і телевізор (Chromecast, Google TV, Android TV) мають бути "
+                            "в одній Wi-Fi мережі, а телевізор — увімкнений.", color=MUTED, size=13),
+                    ft.TextButton("Шукати ще раз", icon=ft.Icons.REFRESH_ROUNDED,
+                                  style=ft.ButtonStyle(color=ACCENT, icon_color=ACCENT),
+                                  on_click=lambda e: (page.pop_dialog(), page.run_task(open_cast)))]
+            else:
+                devices_col.controls = [
+                    ft.FilledButton(
+                        d["name"], icon=ft.Icons.TV_ROUNDED, width=dialog_width(),
+                        on_click=lambda e, d=d: page.run_task(start_cast, d),
+                        style=ft.ButtonStyle(bgcolor=SURFACE_2, color=TEXT, icon_color=ACCENT,
+                                             alignment=ft.Alignment.CENTER_LEFT,
+                                             padding=ft.Padding.symmetric(horizontal=18, vertical=16),
+                                             shape=ft.RoundedRectangleBorder(radius=12)))
+                    for d in devices]
+            try:
+                dlg.update()
+            except Exception:
+                pass
+
+        async def start_cast(device):
+            page.pop_dialog()
+            try:
+                pos = await video.get_current_position()
+            except Exception:
+                pos = None
+            start = (p["target"] if p["restoring"] else pos) or ft.Duration()
+            await video.pause()
+            entry = entries[p["idx"]]
+            sub = subtitle_for(entry)
+            title = show + (f" · {names[p['idx']]}" if names[p["idx"]] else "")
+            toast(f"Підключаюсь до «{device['name']}»…", ft.Icons.CAST_ROUNDED)
+
+            def connect():
+                sess = uafix_cast.Session(device["uuid"])
+                sess.play(core.quality_url(entry["url"], p["quality"]), title,
+                          ctx["item"].get("poster"), start.in_milliseconds / 1000,
+                          sub["url"] if sub else None)
+                return sess
+
+            try:
+                sess = await asyncio.to_thread(connect)
+            except Exception:
+                toast(f"Не вдалося почати трансляцію на «{device['name']}»",
+                      ft.Icons.ERROR_OUTLINE_ROUNDED)
+                return
+            p["cast"] = sess
+            p["cast_state"] = (start.in_milliseconds / 1000, 0.0, "BUFFERING")
+            cast_btn.icon, cast_btn.icon_color = ft.Icons.CAST_CONNECTED_ROUNDED, ACCENT
+            cast_btn.update()
+            show_cast_panel()
+            page.run_task(watch_cast, sess)
+
+        def fmt_time(sec):
+            sec = int(sec or 0)
+            h, m, s_ = sec // 3600, sec % 3600 // 60, sec % 60
+            return f"{h}:{m:02d}:{s_:02d}" if h else f"{m}:{s_:02d}"
+
+        cast_ui = {}
+
+        def show_cast_panel():
+            sess = p.get("cast")
+            if not sess:
+                return
+            pos_text = ft.Text("", color=MUTED, size=13)
+            bar = ft.ProgressBar(value=0, color=ACCENT, bgcolor=SURFACE_2, bar_height=6,
+                                 border_radius=3, width=dialog_width())
+            toggle = ft.IconButton(ft.Icons.PAUSE_ROUNDED, icon_size=40, icon_color="#FFFFFF",
+                                   tooltip="Пауза / відтворення",
+                                   on_click=lambda e: page.run_task(cast_do, "toggle"),
+                                   style=ft.ButtonStyle(bgcolor=ACCENT, shape=ft.CircleBorder()))
+
+            def ctrl(icon, tip, action):
+                return ft.IconButton(icon, icon_size=32, icon_color=TEXT, tooltip=tip,
+                                     on_click=lambda e: page.run_task(cast_do, action))
+
+            cast_ui.update(pos=pos_text, bar=bar, toggle=toggle)
+            page.show_dialog(ft.AlertDialog(
+                title=ft.Row([ft.Icon(ft.Icons.CAST_CONNECTED_ROUNDED, color=ACCENT),
+                              ft.Text(sess.name, weight=ft.FontWeight.W_800, expand=True,
+                                      max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)], spacing=10),
+                bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
+                content=ft.Column([
+                    ft.Text(show + (f" · {names[p['idx']]}" if names[p["idx"]] else ""),
+                            color=TEXT, weight=ft.FontWeight.W_600, max_lines=2),
+                    bar, pos_text,
+                    ft.Row([ctrl(ft.Icons.REPLAY_10_ROUNDED, "Назад на 10 с", -10), toggle,
+                            ctrl(ft.Icons.FORWARD_10_ROUNDED, "Вперед на 10 с", 10)],
+                           alignment=ft.MainAxisAlignment.CENTER, spacing=18),
+                ], tight=True, spacing=12, width=dialog_width()),
+                actions=[ft.TextButton("Сховати", on_click=lambda e: page.pop_dialog(),
+                                       style=ft.ButtonStyle(color=MUTED)),
+                         ft.FilledButton("Дивитись тут", icon=ft.Icons.PHONE_ANDROID_ROUNDED,
+                                         on_click=lambda e: page.run_task(stop_cast, True),
+                                         style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF",
+                                                              icon_color="#FFFFFF"))],
+                on_dismiss=lambda e: cast_ui.clear(),
+            ))
+            render_cast_state()
+
+        def render_cast_state():
+            if not cast_ui or not p.get("cast_state"):
+                return
+            pos, dur, state = p["cast_state"][:3]
+            cast_ui["pos"].value = (f"{fmt_time(pos)} / {fmt_time(dur)}" if dur else fmt_time(pos)) + \
+                ("  ·  завантаження…" if state == "BUFFERING" else "")
+            cast_ui["bar"].value = pos / dur if dur else None
+            cast_ui["toggle"].icon = (ft.Icons.PLAY_ARROW_ROUNDED if state == "PAUSED"
+                                      else ft.Icons.PAUSE_ROUNDED)
+            try:
+                cast_ui["pos"].page.update()
+            except Exception:
+                cast_ui.clear()
+
+        async def cast_do(action):
+            sess = p.get("cast")
+            if not sess:
+                return
+            try:
+                if action == "toggle":
+                    await asyncio.to_thread(sess.toggle)
+                else:
+                    pos = p["cast_state"][0] if p.get("cast_state") else 0
+                    await asyncio.to_thread(sess.seek, pos + action)
+            except Exception:
+                toast("Телевізор не відповідає", ft.Icons.ERROR_OUTLINE_ROUNDED)
+
+        async def watch_cast(sess):
+            """Стан відтворення на телевізорі раз на секунду; вихід із плеєра — кінець трансляції."""
+            fails = 0
+            while p.get("cast") is sess:
+                if not alive():
+                    await stop_cast(False)
+                    return
+                try:
+                    pos, dur, state, reason = await asyncio.to_thread(sess.status)
+                    fails = 0
+                except Exception:
+                    fails += 1
+                    if fails >= 5:
+                        toast("Зв'язок із телевізором втрачено", ft.Icons.CAST_ROUNDED)
+                        await stop_cast(True, quit_tv=False)
+                        return
+                    await asyncio.sleep(1)
+                    continue
+                if state == "IDLE" and reason in ("FINISHED", "CANCELLED", "INTERRUPTED",
+                                                  "OTHER_APP"):
+                    await stop_cast(False, quit_tv=False)  # фільм закінчився або зупинили з пульта
+                    return
+                p["cast_state"] = (pos, dur, state)
+                render_cast_state()
+                await asyncio.sleep(1)
+
+        async def stop_cast(resume_here, quit_tv=True):
+            sess = p.pop("cast", None)
+            if not sess:
+                return
+            pos = p.get("cast_state", (0,))[0]
+            if quit_tv:
+                try:
+                    await asyncio.to_thread(sess.stop)
+                except Exception:
+                    pass
+            if cast_ui:
+                cast_ui.clear()
+                try:
+                    page.pop_dialog()
+                except Exception:
+                    pass
+            if not alive():
+                return
+            cast_btn.icon, cast_btn.icon_color = ft.Icons.CAST_ROUNDED, "#FFFFFF"
+            if pos > 5:
+                p["target"], p["restoring"] = ft.Duration(milliseconds=int(pos * 1000)), True
+                page.run_task(restore_position)
+            if resume_here:
+                await video.play()
+            page.update()
 
         async def seek_by(seconds):
             try:
@@ -2316,8 +2701,10 @@ def main(page: ft.Page):
         # Панель плеєра будується один раз: кнопки, яких не було в ній від початку (або з
         # visible=False), плеєр уже не покаже. Тому — постійні «слоти», у які кнопку
         # вставляємо чи прибираємо; зміни вмісту слотів доходять до екрана.
-        prev_slot, next_slot, voice_slot, sub_slot = (ft.Container() for _ in range(4))
+        prev_slot, next_slot, voice_slot, sub_slot, quality_slot = (ft.Container() for _ in range(5))
         fit_btn = bar_button(ft.Icons.ASPECT_RATIO_ROUNDED, "Масштаб", cycle_fit)
+        cast_btn = bar_button(ft.Icons.CAST_ROUNDED, "Транслювати на телевізор",
+                              lambda e: page.run_task(open_cast))
         refresh_fit_button()
 
         def refresh_bar():
@@ -2327,13 +2714,16 @@ def main(page: ft.Page):
             voice_slot.content = (tv_voice_btn if TV else voice_menu) if voices else None
             sub_slot.content = ((tv_sub_btn if TV else sub_menu)
                                 if entries[p["idx"]].get("subs") else None)
+            quality_slot.content = ((tv_quality_btn if TV else quality_menu)
+                                    if core._VARIANTS.get(entries[p["idx"]]["url"]) else None)
 
         style = dict(seek_bar_position_color=ACCENT, seek_bar_thumb_color=ACCENT,
                      automatically_imply_skip_next_button=False,
                      automatically_imply_skip_previous_button=False,
                      bottom_button_bar=[prev_slot, fv.VideoPlayOrPauseButton(), next_slot,
                                         fv.VideoVolumeButton(), fv.VideoPositionIndicator(),
-                                        fv.VideoSpacer(), voice_slot, sub_slot, fit_btn,
+                                        fv.VideoSpacer(), voice_slot, sub_slot, quality_slot, cast_btn,
+                                        fit_btn,
                                         fv.VideoFullscreenButton()])
         if TV:
             # Телевізор: без окремого повноекранного шару (у нього не потрапляє фокус пульта —
@@ -2366,7 +2756,7 @@ def main(page: ft.Page):
                        lambda e: page.run_task(seek_by, 10)),
                 # UA/CC — одразу за кнопками навігації: справа від роздільника панелі
                 # елементи фокусу з пульта не отримують
-                next_slot, voice_slot, sub_slot, fit_btn, fv.VideoPositionIndicator(),
+                next_slot, voice_slot, sub_slot, quality_slot, fit_btn, fv.VideoPositionIndicator(),
                 fv.VideoSpacer()]
             # «мобільна» панель: у «настільної» є вбудовані гарячі клавіші, які перехоплюють
             # стрілки (перемотка), і до ⏭ / UA / CC пультом не дістатись; тут стрілки ходять
@@ -2465,9 +2855,11 @@ def main(page: ft.Page):
                     del names[len(entries)]
                     continue
                 entry = pick_source(ep, p["voice"])
+                await asyncio.to_thread(core.hls_variants, entry)  # щоб серія була в обраній якості
+                if not alive() or len(entries) >= len(queue) or queue[len(entries)][1] is not ep:
+                    continue
                 entries.append(entry)
-                video.playlist = video.playlist + [
-                    fv.VideoMedia(entry["url"], http_headers=core.stream_headers(entry))]
+                video.playlist = video.playlist + [media(entry)]
                 refresh_bar()
                 video.update()
 
@@ -2542,6 +2934,13 @@ def main(page: ft.Page):
             bgcolor="#000000",
         ))
         async def save_progress():
+            if p.get("cast") and p.get("cast_state"):  # дивимось на телевізорі
+                pos_s, dur_s = p["cast_state"][:2]
+                if pos_s > 5 and dur_s > 0:
+                    _, ep = queue[p["idx"]]
+                    record_progress(ctx, ep, entries[p["idx"]].get("voice") or p["voice"],
+                                    int(pos_s * 1000), int(dur_s * 1000))
+                return
             if p["restoring"]:
                 return  # позиція ще не відновлена — не перезаписуємо збережену нулем
             try:

@@ -1,6 +1,6 @@
 [project]
 name = "uafix-player"
-version = "1.1.6"
+version = "1.1.7"
 description = "Перегляд каталогу uafix.net і відтворення HLS-потоків"
 requires-python = ">=3.10"
 dependencies = [
@@ -8,6 +8,8 @@ dependencies = [
     "flet-video==1.0.4",
     "requests",
     "beautifulsoup4",
+    "pychromecast==14.0.10",
+    "zeroconf==0.39.4",  # остання версія з чистим Python-пакетом (без збірки під Android)
 ]
 
 [tool.flet]
@@ -28,5 +30,14 @@ adaptive_icon_background = "#15171C"
 [tool.flet.android.permission]
 # встановлення завантаженого застосунком оновлення (системне вікно «Встановити»)
 "android.permission.REQUEST_INSTALL_PACKAGES" = true
+# пошук Chromecast / Google TV у Wi-Fi (mDNS)
+"android.permission.CHANGE_WIFI_MULTICAST_STATE" = true
+"android.permission.ACCESS_WIFI_STATE" = true
+"android.permission.ACCESS_NETWORK_STATE" = true
 
 # дозвіл на інтернет (android.permission.INTERNET) і мережевий доступ macOS Flet додає сам
+
+# macOS: дозвіл на локальну мережу — пошук і керування Chromecast / Google TV
+[tool.flet.macos.info]
+NSLocalNetworkUsageDescription = "Щоб знайти телевізор (Chromecast, Google TV) у вашій мережі й транслювати на нього відео."
+NSBonjourServices = ["_googlecast._tcp"]
