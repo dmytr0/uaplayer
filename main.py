@@ -165,7 +165,8 @@ def main(page: ft.Page):
                                  shape=ft.CircleBorder()))
 
     prefs = ft.SharedPreferences()
-    settings = {"sub_scale": 1.0, "fit": "auto", "skipped_version": ""}  # fit "auto": на телефоні в повному екрані — «Заповнити»
+    settings = {"sub_scale": 1.0, "fit": "auto", "skipped_version": "",
+                "auto_updates": True, "keep_history": True}  # fit "auto": на телефоні в повному екрані — «Заповнити»
 
     # Історія переглядів: [{url, title, orig, poster, age, season, label, si, ei, voice,
     # pos, dur, ts}] — найновіше першим. Позиція (pos) і тривалість (dur) — у мілісекундах.
@@ -326,9 +327,14 @@ def main(page: ft.Page):
         await prefs.set("last_version", updater.VERSION)
         if not last:
             return  # перше встановлення — показувати нічого
+        await show_release_notes()
+
+    async def show_release_notes(manual=False):
         try:
             notes = await asyncio.to_thread(updater.release_notes, updater.VERSION)
         except Exception:
+            if manual:
+                toast("Не вдалося завантажити список змін", ft.Icons.ERROR_OUTLINE_ROUNDED)
             return
         page.show_dialog(ft.AlertDialog(
             title=ft.Text(f"Що нового у версії {updater.VERSION}", weight=ft.FontWeight.W_800),
@@ -345,6 +351,8 @@ def main(page: ft.Page):
             return
         now = time.time()
         if not manual:
+            if not settings["auto_updates"]:
+                return
             try:
                 if now - float(await prefs.get("update_checked_at") or 0) < UPDATE_CHECK_EVERY:
                     return
@@ -363,9 +371,9 @@ def main(page: ft.Page):
         elif manual:
             toast(f"У вас найновіша версія {updater.VERSION}", ft.Icons.CHECK_CIRCLE_ROUNDED)
 
-    async def check_updates_from_menu():
-        await home.close_drawer()  # вікно оновлення — не поверх відкритого меню
-        await check_updates(manual=True)
+    async def open_settings_from_menu():
+        await home.close_drawer()
+        open_settings()
 
     async def startup():
         await load_settings()
@@ -397,6 +405,8 @@ def main(page: ft.Page):
 
     def record_progress(ctx, ep, voice, pos_ms, dur_ms):
         """Зберігає, на якій серії й хвилині зупинились (викликається з плеєра)."""
+        if not settings["keep_history"]:
+            return
         si = ei = None
         for i, season in enumerate(ctx["seasons"]):
             for j, e in enumerate(season["episodes"]):
@@ -506,12 +516,14 @@ def main(page: ft.Page):
 
     drawer_controls += [
         ft.Container(ft.Divider(color=BORDER), padding=ft.Padding.only(left=20, right=20, top=10)),
-        ft.Container(ft.Column([
-            ft.Text(f"Версія {updater.VERSION}", size=12, color=MUTED),
-            ft.TextButton("Перевірити оновлення", icon=ft.Icons.SYSTEM_UPDATE_ROUNDED,
-                          style=ft.ButtonStyle(color=ACCENT, icon_color=ACCENT, padding=0),
-                          on_click=lambda e: page.run_task(check_updates_from_menu)),
-        ], spacing=4, tight=True), padding=ft.Padding.only(left=28, right=20, bottom=24)),
+        ft.Container(ft.ListTile(
+            leading=ft.Icon(ft.Icons.SETTINGS_ROUNDED, color=MUTED),
+            title=ft.Text("Налаштування", color=TEXT, size=14, weight=ft.FontWeight.W_500),
+            shape=ft.RoundedRectangleBorder(radius=12), content_padding=ft.Padding.only(left=16),
+            on_click=lambda e: page.run_task(open_settings_from_menu)),
+            padding=ft.Padding.only(left=12, right=12, bottom=4)),
+        ft.Container(ft.Text(f"Версія {updater.VERSION}", size=12, color=MUTED),
+                     padding=ft.Padding.only(left=28, right=20, bottom=24)),
     ]
 
     drawer = ft.NavigationDrawer(
@@ -1143,7 +1155,7 @@ def main(page: ft.Page):
     continue_row = ft.ListView(horizontal=True, spacing=16, height=shelf_card_w / POSTER_RATIO + 28,
                                padding=ft.Padding.symmetric(horizontal=side, vertical=14))
 
-    def clear_history(e=None):
+    def clear_history():
         history.clear()
         save_history()
         render_continue()
@@ -1153,9 +1165,6 @@ def main(page: ft.Page):
         ft.Container(ft.Row([
             ft.Text("Продовжити перегляд", size=20 if is_mobile else 22,
                     weight=ft.FontWeight.W_800, color=TEXT),
-            ft.Container(expand=True),
-            ft.TextButton("Очистити", icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
-                          style=ft.ButtonStyle(color=MUTED, icon_color=MUTED), on_click=clear_history),
         ]), padding=ft.Padding.symmetric(horizontal=side)),
         continue_row,
     ], spacing=0, visible=False)
@@ -1223,6 +1232,136 @@ def main(page: ft.Page):
         route="/", padding=0, bgcolor=BG, drawer=drawer,
         controls=[safe(ft.Column([top_bar_box, body], expand=True, spacing=0))],
     )
+
+    # ═════════════════════ налаштування ═════════════════════
+    def open_settings():
+        def section(title, rows):
+            return ft.Column([
+                ft.Container(ft.Text(title.upper(), size=11, color=MUTED, weight=ft.FontWeight.W_700),
+                             padding=ft.Padding.only(left=4, bottom=6)),
+                ft.Container(ft.Column(rows, spacing=0), bgcolor=SURFACE_2, border_radius=16,
+                             border=ft.Border.all(1, BORDER), clip_behavior=ft.ClipBehavior.HARD_EDGE),
+            ], spacing=0)
+
+        def row(icon, title, subtitle=None, trailing=None, on_click=None, color=TEXT):
+            return ft.ListTile(
+                leading=ft.Icon(icon, color=ACCENT if color == TEXT else color),
+                title=ft.Text(title, color=color, size=15, weight=ft.FontWeight.W_500),
+                subtitle=ft.Text(subtitle, color=MUTED, size=12) if subtitle else None,
+                trailing=trailing, on_click=on_click,
+                content_padding=ft.Padding.symmetric(horizontal=16, vertical=2))
+
+        def choice(key, options, on_set=None):
+            def select(e):
+                value = e.control.value
+                save_setting(key, float(value) if key == "sub_scale" else value)
+                if on_set:
+                    on_set()
+            current = settings[key]
+            if key == "sub_scale":
+                current = next((str(v) for _, v in options if abs(v - float(current)) < 0.01), "1.0")
+            return ft.Dropdown(
+                value=str(current), width=150 if is_mobile else 190, dense=True, border_radius=10, filled=True,
+                fill_color=SURFACE_3, border_color=BORDER, color=TEXT, text_size=14,
+                options=[ft.DropdownOption(key=str(v), text=n) for n, v in options],
+                on_select=select)
+
+        def switch(key):
+            return ft.Switch(value=bool(settings[key]), active_color=ACCENT,
+                             on_change=lambda e: save_setting(key, e.control.value))
+
+        history_info = ft.Text(color=MUTED, size=12)
+
+        def refresh_history_info():
+            n = len(history)
+            history_info.value = (f"{n} {plural(n, 'запис', 'записи', 'записів')}" if n
+                                  else "Порожня")
+
+        refresh_history_info()
+
+        def ask_clear_history(e):
+            def confirm(e):
+                page.pop_dialog()
+                clear_history()
+                refresh_history_info()
+                history_info.update()
+            page.show_dialog(ft.AlertDialog(
+                title=ft.Text("Очистити історію?", weight=ft.FontWeight.W_800),
+                bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
+                content=ft.Text("Зникне поличка «Продовжити перегляд» і збережені позиції "
+                                "у фільмах та серіалах.", color=TEXT, width=dialog_width()),
+                actions=[ft.TextButton("Скасувати", on_click=lambda e: page.pop_dialog(),
+                                       style=ft.ButtonStyle(color=MUTED)),
+                         ft.FilledButton("Очистити", on_click=confirm, autofocus=TV,
+                                         style=ft.ButtonStyle(bgcolor="#E5484D", color="#FFFFFF"))],
+            ))
+
+        def reset_settings(e):
+            for key, value in (("sub_scale", 1.0), ("fit", "auto"), ("auto_updates", True),
+                               ("keep_history", True), ("skipped_version", "")):
+                save_setting(key, value)
+            pop_view()
+            open_settings()
+            toast("Налаштування скинуто", ft.Icons.CHECK_CIRCLE_ROUNDED)
+
+        def open_link(url):
+            page.run_task(ft.UrlLauncher().launch_url, url,
+                          mode=ft.LaunchMode.EXTERNAL_APPLICATION)
+
+        fit_options = [("Авто", "auto")] + [(n, k) for k, n, _ in FIT_MODES]
+        sections = [
+            section("Відтворення", [
+                row(ft.Icons.SUBTITLES_ROUNDED, "Розмір субтитрів",
+                    trailing=choice("sub_scale", SUB_SIZES)),
+                row(ft.Icons.ASPECT_RATIO_ROUNDED, "Масштаб на весь екран",
+                    "Авто: на телефоні — заповнити, на комп'ютері — вписати",
+                    trailing=choice("fit", fit_options)),
+            ]),
+            section("Історія переглядів", [
+                row(ft.Icons.HISTORY_ROUNDED, "Запам'ятовувати, де зупинились",
+                    "Поличка «Продовжити перегляд» на головній", trailing=switch("keep_history")),
+                ft.ListTile(leading=ft.Icon(ft.Icons.DELETE_OUTLINE_ROUNDED, color="#E5484D"),
+                            title=ft.Text("Очистити історію", color="#E5484D", size=15,
+                                          weight=ft.FontWeight.W_500),
+                            subtitle=history_info, on_click=ask_clear_history,
+                            content_padding=ft.Padding.symmetric(horizontal=16, vertical=2)),
+            ]),
+            section("Оновлення", [
+                row(ft.Icons.UPDATE_ROUNDED, "Перевіряти автоматично",
+                    "При запуску, не частіше ніж раз на 6 годин", trailing=switch("auto_updates")),
+                row(ft.Icons.SYSTEM_UPDATE_ROUNDED, "Перевірити оновлення",
+                    f"Встановлено версію {updater.VERSION}",
+                    on_click=lambda e: page.run_task(check_updates, True)),
+                row(ft.Icons.NEW_RELEASES_OUTLINED, "Що нового в цій версії",
+                    on_click=lambda e: page.run_task(show_release_notes, True)),
+            ]),
+            section("Про застосунок", [
+                row(ft.Icons.CODE_ROUNDED, "Сторінка проєкту", "GitHub: усі версії й зміни",
+                    on_click=lambda e: open_link(f"https://github.com/{updater.REPO}/releases")),
+                row(ft.Icons.BUG_REPORT_OUTLINED, "Повідомити про проблему",
+                    on_click=lambda e: open_link(f"https://github.com/{updater.REPO}/issues/new")),
+                row(ft.Icons.RESTART_ALT_ROUNDED, "Скинути налаштування", on_click=reset_settings),
+            ]),
+            ft.Text(f"UAFix Player {updater.VERSION} · вміст — uafix.net", size=12, color=MUTED,
+                    text_align=ft.TextAlign.CENTER),
+        ]
+        bar = ft.Container(
+            ft.Row([round_button(ft.Icons.ARROW_BACK_IOS_NEW_ROUNDED, lambda e: go_back(),
+                                 tooltip="Назад"),
+                    ft.Text("Налаштування", size=20, weight=ft.FontWeight.W_800, color=TEXT)],
+                   spacing=14),
+            height=58, padding=ft.Padding.only(left=14 + traffic_gap, right=14), bgcolor=BG,
+        )
+        body_col = ft.ListView(
+            [ft.Row([ft.Container(ft.Column(sections, spacing=22),
+                                  width=min(640, (page.width or 672) - 32))],
+                    alignment=ft.MainAxisAlignment.CENTER)],
+            expand=True, padding=ft.Padding.only(top=8, bottom=32))
+        page.views.append(ft.View(
+            route="/settings", padding=0, bgcolor=BG,
+            controls=[safe(ft.Column([drag_area(bar), body_col], expand=True, spacing=0))],
+        ))
+        page.update()
 
     # ═════════════════════ сторінка тайтлу ═════════════════════
     async def open_title(item, autoplay=False, resume=False):
@@ -2114,10 +2253,18 @@ def main(page: ft.Page):
                 # таймлайн не впритул до країв екрана (особливо в повноекранному режимі)
                 seek_bar_margin=ft.Padding.only(left=24, right=24, bottom=18),
                 bottom_button_bar_margin=ft.Padding.only(left=16, right=16, bottom=22),
-                # подвійний тап по лівій / правій половині — перемотка на 10 с
-                seek_on_double_tap=True,
-                seek_on_double_tap_backward_duration=ft.Duration(seconds=10),
-                seek_on_double_tap_forward_duration=ft.Duration(seconds=10),
+                # без перемотки подвійним тапом: її бічні зони «з'їдали» звичайний тап, і панель
+                # відкривалась лише з центру екрана; ±10 с — кнопками поруч із ▶/⏸
+                seek_on_double_tap=False,
+                primary_button_bar=[
+                    ft.IconButton(ft.Icons.REPLAY_10_ROUNDED, icon_size=36, icon_color="#FFFFFF",
+                                  tooltip="Назад на 10 с",
+                                  on_click=lambda e: page.run_task(seek_by, -10)),
+                    ft.Container(width=28), fv.VideoPlayOrPauseButton(icon_size=56), ft.Container(width=28),
+                    ft.IconButton(ft.Icons.FORWARD_10_ROUNDED, icon_size=36, icon_color="#FFFFFF",
+                                  tooltip="Вперед на 10 с",
+                                  on_click=lambda e: page.run_task(seek_by, 10)),
+                ],
             )
             video.controls = fv.AdaptiveVideoControls(
                 material=fv.MaterialVideoControls(**mobile_style) if is_mobile else None,
