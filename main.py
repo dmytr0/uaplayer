@@ -301,9 +301,14 @@ def main(page: ft.Page):
     # екран, назад вертикально — вихід (працює й тоді, коли сам інтерфейс у повному екрані
     # зафіксовано горизонтально). Датчик вмикається лише в плеєрі.
     orient = {"cb": None}
+    def on_reading(e):
+        ft.context.disable_auto_update()  # без перевірки всього екрана після кожного показу
+        if orient["cb"]:
+            orient["cb"](e.x, e.y)
+
     accel = ft.Accelerometer(
         enabled=False, interval=ft.Duration(milliseconds=400),
-        on_reading=lambda e: orient["cb"] and orient["cb"](e.x, e.y)) if is_mobile else None
+        on_reading=on_reading) if is_mobile else None
     # fit "auto": на телефоні в повному екрані — «Заповнити»; quality: "1080" / "720" / "480"
     settings = {"sub_scale": 1.0, "fit": "auto", "skipped_version": "",
                 "auto_updates": True, "keep_history": True, "quality": "1080",
@@ -3954,6 +3959,8 @@ def main(page: ft.Page):
                 p["portrait_lock"] = True
                 page.run_task(page.set_allowed_device_orientations,
                               [ft.DeviceOrientation.PORTRAIT_UP])
+            if accel is not None:
+                sensor()
             if is_mobile:
                 # на весь екран — обраний масштаб (за замовчуванням «заповнити»: фільми
                 # закодовано в кадр 16:9 з чорними смугами, а екран телефона ширший);
@@ -3967,12 +3974,22 @@ def main(page: ft.Page):
         if accel is not None:
             o = {"state": None, "count": 0}
 
+            def sensor():
+                """Датчик потрібен лише двічі: щоб вийти з повного екрана, коли в нього
+                увійшли поворотом, і щоб зняти тимчасову вертикальну фіксацію. Решту часу
+                він вимкнений — його показники кожні 0,4 с давали ривки відео."""
+                need = alive() and (p.get("portrait_lock") or
+                                    (p.get("auto_fs") and st.get("fullscreen")))
+                if bool(need) != bool(accel.enabled):
+                    accel.enabled = bool(need)
+                    o["state"], o["count"] = None, 0
+                    accel.update()
+
             def on_orient(x, y):
                 if not alive():
                     orient["cb"] = None
-                    accel.enabled = False
-                    accel.update()
                     unlock_rotation()
+                    sensor()
                     return
                 s_ = "land" if abs(x) > 7 and abs(y) < 5 else "port" if abs(y) > 7 and abs(x) < 5 \
                     else None
@@ -3993,6 +4010,7 @@ def main(page: ft.Page):
             def unlock_rotation():
                 if p.pop("portrait_lock", False):
                     page.run_task(page.set_allowed_device_orientations, [])  # як у системі
+                    sensor()
 
             def on_page_resize():
                 # Вхід: інтерфейс сам повернувся горизонтально. Це стається лише коли
@@ -4012,8 +4030,6 @@ def main(page: ft.Page):
             p["last_land"] = (page.width or 0) > (page.height or 0)
             st["player_resize"] = on_page_resize
             orient["cb"] = on_orient
-            accel.enabled = True
-            accel.update()
         st["video"] = video
         bar = drag_area(ft.Container(
             ft.Row([
