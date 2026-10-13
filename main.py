@@ -173,6 +173,44 @@ def main(page: ft.Page):
         page.window.title_bar_hidden = True
         page.window.title_bar_buttons_hidden = False
     traffic_gap = 78 if is_mac else 0
+    # для перевірки на Mac — UAFIX_WIN=1 (панель і кнопки вікна як на Windows)
+    is_win = page.platform == ft.PagePlatform.WINDOWS or os.environ.get("UAFIX_WIN") == "1"
+    if is_win:
+        # як на Mac: без системної смуги заголовка — верхня панель застосунку і є заголовком,
+        # кнопки вікна (згорнути / розгорнути / закрити) — власні, праворуч (win_buttons)
+        page.window.title_bar_hidden = True
+        page.window.title_bar_buttons_hidden = True
+
+    def win_buttons(on_dark=False):
+        """Кнопки вікна Windows у стилі Windows 11 (на інших системах — нічого)."""
+        if not is_win:
+            return []
+        fg = "#FFFFFF" if on_dark else TEXT
+
+        def minimize(e):
+            page.window.minimized = True
+            page.update()
+
+        def maximize(e):
+            page.window.maximized = not page.window.maximized
+            page.update()
+
+        def btn(icon, on_click, hover, hover_fg=None, tip=None):
+            return ft.IconButton(
+                icon, on_click=on_click, tooltip=tip, icon_size=16, width=46, height=34,
+                hover_color=hover,
+                style=ft.ButtonStyle(
+                    shape=ft.RoundedRectangleBorder(radius=6), padding=0,
+                    icon_color={ft.ControlState.HOVERED: hover_fg or fg,
+                                ft.ControlState.DEFAULT: fg}))
+
+        soft = ft.Colors.with_opacity(0.1, fg)
+        return [ft.Row([
+            btn(ft.Icons.REMOVE_ROUNDED, minimize, soft, tip="Згорнути"),
+            btn(ft.Icons.CROP_SQUARE_ROUNDED, maximize, soft, tip="Розгорнути"),
+            btn(ft.Icons.CLOSE_ROUNDED, lambda e: page.run_task(page.window.close), "#C42B1C",
+                "#FFFFFF", tip="Закрити"),
+        ], spacing=2, tight=True)]
     side_pad = 18 if is_mobile else 40
 
     def focusable(content, on_click, on_focus_change=None, radius=14, autofocus=False,
@@ -1159,11 +1197,12 @@ def main(page: ft.Page):
         top_bar = ft.Row([menu_btn, title_block, search_btn], spacing=12,
                          vertical_alignment=ft.CrossAxisAlignment.CENTER)
     else:
-        top_bar = ft.Row([menu_btn, title_block, search, layout_toggle], spacing=12,
-                         vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        top_bar = ft.Row([menu_btn, title_block, search, layout_toggle, *win_buttons()],
+                         spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER)
     top_bar_box = drag_area(ft.Container(
         top_bar,
-        padding=ft.Padding.only(left=12 + traffic_gap, right=20, top=10, bottom=10),
+        padding=ft.Padding.only(left=12 + traffic_gap, right=8 if is_win else 20, top=10,
+                                bottom=10),
         bgcolor=BG if is_mobile else ft.Colors.with_opacity(0.85, BG),
         blur=None if (is_mobile or TV) else ft.Blur(20, 20),
         border=ft.Border.only(bottom=ft.BorderSide(1, BORDER)),
@@ -2436,9 +2475,11 @@ def main(page: ft.Page):
         bar = ft.Container(
             ft.Row([round_button(ft.Icons.ARROW_BACK_IOS_NEW_ROUNDED, lambda e: go_back(),
                                  tooltip="Назад"),
-                    ft.Text(heading, size=20, weight=ft.FontWeight.W_800, color=TEXT)],
+                    ft.Text(heading, size=20, weight=ft.FontWeight.W_800, color=TEXT,
+                            expand=True), *win_buttons()],
                    spacing=14),
-            height=58, padding=ft.Padding.only(left=14 + traffic_gap, right=14), bgcolor=BG,
+            height=58, padding=ft.Padding.only(left=14 + traffic_gap, right=8 if is_win else 14),
+            bgcolor=BG,
         )
         content = ui.appear(ft.Column(sections, spacing=22))
         body_col = ft.ListView(
@@ -2673,8 +2714,8 @@ def main(page: ft.Page):
                             overflow=ft.TextOverflow.ELLIPSIS, expand=True)
         bar = ft.Container(
             ft.Row([round_button(ft.Icons.ARROW_BACK_IOS_NEW_ROUNDED, lambda e: go_back(),
-                                    tooltip="Назад"), bar_title], spacing=14),
-            height=58, padding=ft.Padding.only(left=14 + traffic_gap, right=14),
+                                    tooltip="Назад"), bar_title, *win_buttons()], spacing=14),
+            height=58, padding=ft.Padding.only(left=14 + traffic_gap, right=8 if is_win else 14),
             bgcolor=BG, animate=ui.MED,
             border=ft.Border.only(bottom=ft.BorderSide(1, ft.Colors.with_opacity(0, "#FFFFFF"))),
         )
@@ -4038,8 +4079,10 @@ def main(page: ft.Page):
                 ft.Column([ft.Text(show, size=15, weight=ft.FontWeight.W_700, color="#FFFFFF",
                                    max_lines=1, overflow=ft.TextOverflow.ELLIPSIS), now],
                           spacing=0, expand=True),
+                *win_buttons(on_dark=True),
             ], spacing=10),
-            padding=ft.Padding.only(left=14 + traffic_gap, right=14, top=8, bottom=8),
+            padding=ft.Padding.only(left=14 + traffic_gap, right=8 if is_win else 14, top=8,
+                                    bottom=8),
             bgcolor="#000000",
         ))
         async def save_progress():

@@ -211,11 +211,25 @@ def _spawn(platform_name, script):
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def _start_launcher(exe, *args):
+    """Windows: запустити портативний .exe (він вікно консолі не відкриває) окремо від нас."""
+    import subprocess
+    flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    subprocess.Popen([exe, *args], creationflags=flags, close_fds=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL)
+
+
 def relaunch_desktop(platform_name):
     """Перезапуск застосунку (напр. після зміни теми): скрипт чекає, поки цей процес
     завершиться, і відкриває застосунок знову. Після виклику застосунок має завершитись."""
     import os
     import tempfile
+    launcher = os.environ.get("UAFIX_LAUNCHER")
+    if platform_name == "windows" and launcher:
+        # портативний .exe сам дочекається нашого виходу й запуститься знову
+        _start_launcher(launcher, "--wait", str(os.getpid()))
+        return
     target = desktop_target(platform_name)
     if not target:
         raise RuntimeError("перезапуск недоступний")
@@ -280,22 +294,13 @@ echo "$(date) done" >> "{log}"
 rm -rf "{work}"
 ''')
     elif pkg_path.lower().endswith(".exe"):
-        # портативний .exe: новий кладемо на місце старого (там, де його тримає людина)
-        # і запускаємо — він сам розпакує нову версію
+        # портативний .exe: новий сам дочекається, поки ми закриємось, стане на місце старого
+        # (там, де його тримає людина) і запуститься — без скриптів і вікон консолі
         launcher = os.environ.get("UAFIX_LAUNCHER")
         if not launcher:
             raise RuntimeError("не знайдено портативний .exe застосунку")
-        script = os.path.join(work, "update.bat")
-        with open(script, "w", encoding="utf-8") as f:
-            f.write(f'''@echo off
-echo %date% %time% update start>>"{log}"
-:wait
-tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul && (timeout /t 1 /nobreak >nul & goto wait)
-timeout /t 2 /nobreak >nul
-copy /Y "{pkg_path}" "{launcher}" >nul
-echo %date% %time% replaced>>"{log}"
-{_win_relaunch(launcher, marker, log) if relaunch else ""}
-''')
+        _start_launcher(pkg_path, "--wait", str(pid), "--replace", launcher)
+        return
     else:
         target = target or desktop_target(platform_name)
         if not target:

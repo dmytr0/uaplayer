@@ -163,11 +163,12 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item UAFix-Player-Windows.zip tools/win_launcher/app.zip
-          $ico = Get-ChildItem -Recurse -Filter app_icon.ico build | Select-Object -First 1
+          # іконка — з нашого assets/icon.png (раніше бралась перша знайдена app_icon.ico,
+          # і нею виявилась стандартна іконка Flet)
+          python -m pip install --quiet pillow
+          python -c "from PIL import Image; Image.open('assets/icon.png').convert('RGBA').save('tools/win_launcher/app.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
           Push-Location tools/win_launcher
-          if ($ico) {
-            go run github.com/akavel/rsrc@v0.10.2 -ico $ico.FullName -o rsrc.syso
-          }
+          go run github.com/akavel/rsrc@v0.10.2 -ico app.ico -o rsrc.syso
           go build -trimpath -ldflags "-H windowsgui -s -w -X main.version=$env:APP_VERSION" -o ../../UAFix-Player-Windows.exe .
           Pop-Location
           Get-Item UAFix-Player-Windows.exe | Select-Object Name, Length
