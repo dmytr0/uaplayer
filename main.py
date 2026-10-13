@@ -803,8 +803,91 @@ def main(page: ft.Page):
     st = {"mode": ("home", None), "page": 1, "items": [], "has_more": True,
           "loading": False, "gen": 0, "layout": "list" if TV else "grid"}
 
+    # Спливаючі повідомлення — власна плашка в кожному екрані. Стандартний SnackBar Flet при
+    # появі й зникненні перебудовує весь екран (на телефоні головна помітно блимала).
+    toast_slots = {}  # id екрана → місце для плашки
+    toast_seq = [0]
+    TOAST_SECONDS = 3
+
+    def with_toast(content):
+        """Обгортка вмісту екрана: поверх — місце для плашки повідомлення."""
+        slot = ft.Container(left=0, right=0, bottom=24, visible=False,
+                            alignment=ft.Alignment.BOTTOM_CENTER)
+        holder = ft.Stack([content, slot], expand=True, fit=ft.StackFit.EXPAND)
+        holder.data = slot
+        return holder
+
+    def view_with_toast(view):
+        for c in view.controls:
+            if isinstance(c, ft.Stack) and isinstance(c.data, ft.Container):
+                return c.data
+            if isinstance(c, ft.SafeArea) and isinstance(c.content, ft.Stack) and \
+                    isinstance(c.content.data, ft.Container):
+                return c.content.data
+        return None
+
     def toast(msg, icon=ft.Icons.INFO_OUTLINE_ROUNDED, retry=None):
         """Спливаюче повідомлення; retry — дія для кнопки «Повторити»."""
+        slot = view_with_toast(page.views[-1]) if page.views else None
+        if slot is None:
+            return snack(msg, icon, retry)
+        toast_seq[0] += 1
+        seq = toast_seq[0]
+
+        def do_retry(e):
+            hide()
+            retry()
+
+        card = ft.Container(
+            ft.Row([ft.Icon(icon, color=ACCENT, size=18),
+                    ft.Text(msg, color=TEXT, size=14, expand=True),
+                    *([ft.TextButton("Повторити", on_click=do_retry,
+                                     style=ft.ButtonStyle(color=ACCENT))] if retry else [])],
+                   spacing=10),
+            width=None if is_mobile else 520,
+            bgcolor=ft.Colors.with_opacity(0.86, SURFACE_3), border_radius=12,
+            border=ft.Border.all(1, ft.Colors.with_opacity(0.08, "#FFFFFF")),
+            padding=ft.Padding.symmetric(horizontal=16, vertical=12),
+            margin=ft.Margin.symmetric(horizontal=16),
+            shadow=ft.BoxShadow(blur_radius=16, offset=ft.Offset(0, 6),
+                                color=ft.Colors.with_opacity(0.3, "#000000")),
+            opacity=0, animate_opacity=ui.FAST, offset=ft.Offset(0, 0.3), animate_offset=ui.FAST,
+        )
+
+        def hide():
+            if toast_seq[0] != seq:
+                return
+            card.opacity, card.offset = 0, ft.Offset(0, 0.3)
+            try:
+                card.update()
+            except Exception:
+                pass
+
+        async def run():
+            await asyncio.sleep(0.02)
+            card.opacity, card.offset = 1, ft.Offset(0, 0)
+            try:
+                card.update()
+            except Exception:
+                return
+            await asyncio.sleep(TOAST_SECONDS + (2 if retry else 0))
+            hide()
+            await asyncio.sleep(0.3)
+            if toast_seq[0] == seq:
+                slot.content, slot.visible = None, False
+                try:
+                    slot.update()
+                except Exception:
+                    pass
+
+        slot.content, slot.visible = card, True
+        try:
+            slot.update()
+        except Exception:
+            return snack(msg, icon, retry)
+        page.run_task(run)
+
+    def snack(msg, icon=ft.Icons.INFO_OUTLINE_ROUNDED, retry=None):
         page.show_dialog(ft.SnackBar(
             ft.Row([ft.Icon(icon, color=ACCENT, size=18),
                     ft.Text(msg, color=TEXT, expand=True)], spacing=10),
@@ -812,7 +895,7 @@ def main(page: ft.Page):
             shape=ft.RoundedRectangleBorder(radius=12), width=None if is_mobile else 520,
             action=ft.SnackBarAction("Повторити", text_color=ACCENT) if retry else None,
             on_action=(lambda e: retry()) if retry else None,
-            duration=8000 if retry else 4000,
+            duration=(TOAST_SECONDS + (2 if retry else 0)) * 1000,
             persist=False,  # інакше плашка з кнопкою «Повторити» не зникає сама
         ))
 
@@ -824,7 +907,9 @@ def main(page: ft.Page):
         return ft.Icons.WIFI_OFF_ROUNDED if "інтернет" in msg else ft.Icons.ERROR_OUTLINE_ROUNDED
 
     def safe(control):
-        """На телефоні — відступи від системних рядків (годинник, батарея, жести)."""
+        """На телефоні — відступи від системних рядків (годинник, батарея, жести).
+        Заразом — місце для спливаючих повідомлень (див. toast)."""
+        control = with_toast(control)
         return ft.SafeArea(control, expand=True) if is_mobile else control
 
     def drag_area(content):
@@ -3823,6 +3908,13 @@ def main(page: ft.Page):
             if not on:
                 st["fullscreen_exit"] = time.monotonic()
                 p["auto_fs"] = False  # вийшли (кнопкою чи поворотом) — далі знову за поворотом
+            if is_mobile and not on and accel is not None:
+                # вийшли кнопкою, а телефон ще в руках горизонтально — інтерфейс
+                # повертаємо вертикально й тримаємо так, доки телефон не поставлять
+                # вертикально (тоді поворот знову вільний, див. on_orient)
+                p["portrait_lock"] = True
+                page.run_task(page.set_allowed_device_orientations,
+                              [ft.DeviceOrientation.PORTRAIT_UP])
             if is_mobile:
                 # на весь екран — обраний масштаб (за замовчуванням «заповнити»: фільми
                 # закодовано в кадр 16:9 з чорними смугами, а екран телефона ширший);
@@ -3841,6 +3933,7 @@ def main(page: ft.Page):
                     orient["cb"] = None
                     accel.enabled = False
                     accel.update()
+                    unlock_rotation()
                     return
                 s_ = "land" if abs(x) > 7 and abs(y) < 5 else "port" if abs(y) > 7 and abs(x) < 5 \
                     else None
@@ -3848,6 +3941,8 @@ def main(page: ft.Page):
                     return  # лежить на столі чи нахилений — нічого не робимо
                 o["count"] = o["count"] + 1 if s_ == o["state"] else 1
                 o["state"] = s_
+                if o["count"] == 2 and s_ == "port":
+                    unlock_rotation()
                 # Вихід: повернули вертикально — лише якщо в повний екран увійшли саме
                 # поворотом (повноекранний плеєр тримає інтерфейс горизонтальним, тож
                 # «вертикально» видно тільки за датчиком)
@@ -3855,6 +3950,10 @@ def main(page: ft.Page):
                     p["auto_fs"] = False
                     video.fullscreen = False
                     video.update()
+
+            def unlock_rotation():
+                if p.pop("portrait_lock", False):
+                    page.run_task(page.set_allowed_device_orientations, [])  # як у системі
 
             def on_page_resize():
                 # Вхід: інтерфейс сам повернувся горизонтально. Це стається лише коли
