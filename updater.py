@@ -66,6 +66,11 @@ def asset_for(release, platform_name, tv=False):
     elif platform_name == "macos":
         name = "UAFix-Player-macOS.zip"
     elif platform_name == "windows":
+        # запущено з портативного .exe — оновлюємо його; інакше (стара тека з zip) — zip
+        import os
+        if os.environ.get("UAFIX_LAUNCHER"):
+            return release["assets"].get("UAFix-Player-Windows.exe") or \
+                release["assets"].get("UAFix-Player-Windows.zip")
         name = "UAFix-Player-Windows.zip"
     else:
         return None
@@ -158,73 +163,24 @@ def mark_started():
         pass
 
 
-def install_desktop(zip_path, platform_name, target=None, relaunch=True):
-    """Розпаковує оновлення й запускає заміну після виходу застосунку. Після виклику
-    застосунок має завершитись (скрипт чекає на це)."""
-    import glob
-    import os
-    import subprocess
-    import tempfile
-    target = target or desktop_target(platform_name)
-    if not target:
-        raise RuntimeError("немає доступу до теки застосунку")
-    work = tempfile.mkdtemp(prefix="uafix-update-")
-    pid = os.getpid()
-    marker = started_marker()
-    log = os.path.join(_data_dir(), ".uafix_update.log")
-    if platform_name == "macos":
-        # ditto, а не zipfile: зберігає права на виконання й символьні посилання в .app
-        subprocess.run(["/usr/bin/ditto", "-x", "-k", zip_path, work], check=True)
-        apps = glob.glob(os.path.join(work, "*.app"))
-        if not apps:
-            raise RuntimeError("в архіві немає застосунку")
-        new_app, old = apps[0], target
-        script = os.path.join(work, "update.sh")
-        with open(script, "w") as f:
-            # Після заміни — запуск; якщо за 25 с нова версія не відзвітувала про старт
-            # (позначка), закриваємо її й відкриваємо ще раз: перший запуск після оновлення
-            # інколи зависав на екрані завантаження, а повторний проходив нормально
-            relaunch_cmd = f'''
+def _mac_relaunch(app, marker, log):
+    """Фрагмент sh: відкрити застосунок; якщо за 25 с він не відзвітував про старт
+    (позначка) — закрити й відкрити ще раз."""
+    return f'''
 rm -f "{marker}"
-open "{old}"
+open "{app}"
 i=0
 while [ $i -lt 50 ] && [ ! -f "{marker}" ]; do sleep 0.5; i=$((i+1)); done
 if [ ! -f "{marker}" ]; then
   echo "$(date) no start marker, relaunching" >> "{log}"
-  pkill -f "{old}/Contents/MacOS/" ; sleep 2
-  open "{old}"
-fi''' if relaunch else ""
-            f.write(f'''#!/bin/sh
-echo "$(date) update start" >> "{log}"
-while kill -0 {pid} 2>/dev/null; do sleep 0.5; done
-sleep 2
-rm -rf "{old}.old"
-mv "{old}" "{old}.old" && mv "{new_app}" "{old}" && rm -rf "{old}.old" || mv "{old}.old" "{old}"
-xattr -dr com.apple.quarantine "{old}" 2>/dev/null
-echo "$(date) replaced" >> "{log}"
-sleep 1
-{relaunch_cmd}
-echo "$(date) done" >> "{log}"
-rm -rf "{work}"
-''')
-        subprocess.Popen(["/bin/sh", script], start_new_session=True,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    else:
-        import zipfile
-        with zipfile.ZipFile(zip_path) as z:
-            z.extractall(work)
-        exe = _exe_path()
-        src = work
-        if not os.path.exists(os.path.join(src, os.path.basename(exe))):
-            # архів міг містити ще одну теку всередині
-            found = glob.glob(os.path.join(work, "*", os.path.basename(exe)))
-            if not found:
-                raise RuntimeError("в архіві немає застосунку")
-            src = os.path.dirname(found[0])
-        script = os.path.join(work, "update.bat")
-        with open(script, "w", encoding="utf-8") as f:
-            name = os.path.basename(exe)
-            relaunch_cmd = f'''
+  pkill -f "{app}/Contents/MacOS/" ; sleep 2
+  open "{app}"
+fi'''
+
+
+def _win_relaunch(exe, marker, log):
+    name = "uafix-player.exe"  # сам застосунок (запускач лише стартує його й виходить)
+    return f'''
 del "{marker}" 2>nul
 start "" "{exe}"
 set /a n=0
@@ -239,7 +195,122 @@ echo %date% %time% no start marker, relaunching>>"{log}"
 taskkill /IM "{name}" /F >nul 2>&1
 timeout /t 2 /nobreak >nul
 start "" "{exe}"
-:started''' if relaunch else ""
+:started'''
+
+
+def _spawn(platform_name, script):
+    import subprocess
+    if platform_name == "macos":
+        subprocess.Popen(["/bin/sh", script], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        flags = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED | NEW_GROUP | NO_WINDOW
+        subprocess.Popen(["cmd", "/c", script], creationflags=flags, close_fds=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def relaunch_desktop(platform_name):
+    """Перезапуск застосунку (напр. після зміни теми): скрипт чекає, поки цей процес
+    завершиться, і відкриває застосунок знову. Після виклику застосунок має завершитись."""
+    import os
+    import tempfile
+    target = desktop_target(platform_name)
+    if not target:
+        raise RuntimeError("перезапуск недоступний")
+    work = tempfile.mkdtemp(prefix="uafix-restart-")
+    pid, marker = os.getpid(), started_marker()
+    log = os.path.join(_data_dir(), ".uafix_update.log")
+    if platform_name == "macos":
+        script = os.path.join(work, "restart.sh")
+        with open(script, "w") as f:
+            f.write(f'''#!/bin/sh
+while kill -0 {pid} 2>/dev/null; do sleep 0.3; done
+sleep 1
+{_mac_relaunch(target, marker, log)}
+rm -rf "{work}"
+''')
+    else:
+        script = os.path.join(work, "restart.bat")
+        with open(script, "w", encoding="utf-8") as f:
+            f.write(f'''@echo off
+:wait
+tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul && (timeout /t 1 /nobreak >nul & goto wait)
+{_win_relaunch(os.environ.get("UAFIX_LAUNCHER") or _exe_path(), marker, log)}
+''')
+    _spawn(platform_name, script)
+
+
+def install_desktop(pkg_path, platform_name, target=None, relaunch=True):
+    """Встановлює завантажене оновлення й запускає заміну після виходу застосунку. Після
+    виклику застосунок має завершитись (скрипт чекає на це).
+    Mac — zip із .app (замінюється на місці); Windows — портативний .exe (кладеться на місце
+    старого) або, якщо застосунок розпаковано з zip, — zip з текою застосунку."""
+    import glob
+    import os
+    import subprocess
+    import tempfile
+    work = tempfile.mkdtemp(prefix="uafix-update-")
+    pid, marker = os.getpid(), started_marker()
+    log = os.path.join(_data_dir(), ".uafix_update.log")
+    if platform_name == "macos":
+        target = target or desktop_target(platform_name)
+        if not target:
+            raise RuntimeError("немає доступу до теки застосунку")
+        # ditto, а не zipfile: зберігає права на виконання й символьні посилання в .app
+        subprocess.run(["/usr/bin/ditto", "-x", "-k", pkg_path, work], check=True)
+        apps = glob.glob(os.path.join(work, "*.app"))
+        if not apps:
+            raise RuntimeError("в архіві немає застосунку")
+        new_app, old = apps[0], target
+        script = os.path.join(work, "update.sh")
+        with open(script, "w") as f:
+            f.write(f'''#!/bin/sh
+echo "$(date) update start" >> "{log}"
+while kill -0 {pid} 2>/dev/null; do sleep 0.5; done
+sleep 2
+rm -rf "{old}.old"
+mv "{old}" "{old}.old" && mv "{new_app}" "{old}" && rm -rf "{old}.old" || mv "{old}.old" "{old}"
+xattr -dr com.apple.quarantine "{old}" 2>/dev/null
+echo "$(date) replaced" >> "{log}"
+sleep 1
+{_mac_relaunch(old, marker, log) if relaunch else ""}
+echo "$(date) done" >> "{log}"
+rm -rf "{work}"
+''')
+    elif pkg_path.lower().endswith(".exe"):
+        # портативний .exe: новий кладемо на місце старого (там, де його тримає людина)
+        # і запускаємо — він сам розпакує нову версію
+        launcher = os.environ.get("UAFIX_LAUNCHER")
+        if not launcher:
+            raise RuntimeError("не знайдено портативний .exe застосунку")
+        script = os.path.join(work, "update.bat")
+        with open(script, "w", encoding="utf-8") as f:
+            f.write(f'''@echo off
+echo %date% %time% update start>>"{log}"
+:wait
+tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul && (timeout /t 1 /nobreak >nul & goto wait)
+timeout /t 2 /nobreak >nul
+copy /Y "{pkg_path}" "{launcher}" >nul
+echo %date% %time% replaced>>"{log}"
+{_win_relaunch(launcher, marker, log) if relaunch else ""}
+''')
+    else:
+        target = target or desktop_target(platform_name)
+        if not target:
+            raise RuntimeError("немає доступу до теки застосунку")
+        import zipfile
+        with zipfile.ZipFile(pkg_path) as z:
+            z.extractall(work)
+        exe = _exe_path()
+        src = work
+        if not os.path.exists(os.path.join(src, os.path.basename(exe))):
+            # архів міг містити ще одну теку всередині
+            found = glob.glob(os.path.join(work, "*", os.path.basename(exe)))
+            if not found:
+                raise RuntimeError("в архіві немає застосунку")
+            src = os.path.dirname(found[0])
+        script = os.path.join(work, "update.bat")
+        with open(script, "w", encoding="utf-8") as f:
             f.write(f'''@echo off
 echo %date% %time% update start>>"{log}"
 :wait
@@ -247,8 +318,6 @@ tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul && (timeout /t 1 /nobreak 
 timeout /t 2 /nobreak >nul
 robocopy "{src}" "{target}" /E /R:10 /W:1 /NFL /NDL /NJH /NJS >nul
 echo %date% %time% replaced>>"{log}"
-{relaunch_cmd}
+{_win_relaunch(exe, marker, log) if relaunch else ""}
 ''')
-        flags = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED | NEW_GROUP | NO_WINDOW
-        subprocess.Popen(["cmd", "/c", script], creationflags=flags, close_fds=True,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _spawn(platform_name, script)

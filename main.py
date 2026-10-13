@@ -273,10 +273,17 @@ def main(page: ft.Page):
         return focusable(ctrl, action, on_focus if highlight else None, radius=radius,
                          autofocus=autofocus, focus_bg=focus_bg)
 
-    def round_button(icon, on_click, tooltip=None, size=38):
+    def round_button(icon, on_click, tooltip=None, size=38, over_image=False, on_dark=False):
         """Кругла кнопка «скляна» на ПК; на телевізорі — звичайна IconButton (з фокусом)."""
-        if not TV:
+        if not TV and over_image:  # поверх фото — напівпрозоре коло, щоб стрілку було видно
             return ui.glass_button(icon, on_click, tooltip=tooltip, size=size, blur=not is_mobile)
+        if not TV:  # на звичайній панелі — лише іконка, підсвітка тільки під мишею
+            fg = "#FFFFFF" if on_dark else TEXT
+            return ft.IconButton(icon, on_click=on_click, tooltip=tooltip, icon_color=fg,
+                                 icon_size=20,
+                                 style=ft.ButtonStyle(
+                                     overlay_color=ft.Colors.with_opacity(0.1, fg),
+                                     shape=ft.CircleBorder()))
         return ft.IconButton(icon, on_click=on_click, tooltip=tooltip,
                              style=ft.ButtonStyle(
                                  # без фокуса — просто стрілка (на TV кнопка на звичайній панелі,
@@ -369,8 +376,8 @@ def main(page: ft.Page):
 
         def update(e):
             page.pop_dialog()
-            if platform_name in ("macos", "windows") and url != rel["url"] and \
-                    updater.desktop_target(platform_name):
+            if platform_name in ("macos", "windows") and url != rel["url"] and (
+                    url.lower().endswith(".exe") or updater.desktop_target(platform_name)):
                 # Mac / Windows: завантаження в застосунку й автоматичний перезапуск
                 page.run_task(download_and_install, url, rel["version"])
                 return
@@ -436,7 +443,9 @@ def main(page: ft.Page):
         desktop = platform_name in ("macos", "windows")
         if desktop:
             import tempfile
-            dest = os.path.join(tempfile.gettempdir(), "uafix-update.zip")
+            dest = os.path.join(tempfile.gettempdir(),
+                                "uafix-update.exe" if url.lower().endswith(".exe")
+                                else "uafix-update.zip")
         else:
             dest = os.path.join(update_dir(), "update.apk")
         bar = ft.ProgressBar(value=None, color=ACCENT, bgcolor=SURFACE_2, bar_height=6,
@@ -530,6 +539,28 @@ def main(page: ft.Page):
         finally:
             os._exit(0)  # скрипт заміни чекає саме на завершення процесу
 
+    async def restart_app():
+        """Перезапуск застосунку (зміна теми): Android — силами MainActivity,
+        Mac / Windows — скриптом, що чекає завершення й відкриває застосунок знову."""
+        page.pop_dialog()
+        if platform_name == "android":
+            await ft.UrlLauncher().launch_url("uafixupdate://restart",
+                                              mode=ft.LaunchMode.EXTERNAL_APPLICATION)
+            return
+        if platform_name in ("macos", "windows") and updater.desktop_target(platform_name):
+            try:
+                updater.relaunch_desktop(platform_name)
+            except Exception:
+                pass
+            else:
+                await asyncio.sleep(0.3)
+                try:
+                    await page.window.destroy()
+                finally:
+                    os._exit(0)
+        toast("Закрийте й знову відкрийте застосунок, щоб застосувати тему",
+              ft.Icons.RESTART_ALT_ROUNDED)
+
     async def show_whats_new():
         """Перший запуск нової версії — коротко, що змінилось."""
         last = await prefs.get("last_version")
@@ -611,15 +642,27 @@ def main(page: ft.Page):
         """Злиті дані з усіх пристроїв → у цей пристрій (якщо щось змінилось)."""
         if json.dumps(doc, sort_keys=True) == json.dumps(sync_doc(), sort_keys=True):
             return
+        before = (continue_signature(), favorites_signature())
         history[:] = doc.get("history") or []
         favorites[:] = doc.get("favorites") or []
         if doc.get("history_cleared", 0) != settings["history_cleared"]:
             save_setting("history_cleared", doc.get("history_cleared", 0))
         page.run_task(prefs.set, "history", json.dumps(history, ensure_ascii=False))
         page.run_task(prefs.set, "favorites", json.dumps(favorites, ensure_ascii=False))
-        render_continue(focus=False)
-        if len(page.views) == 1 and st["mode"] == ("cat", FAV_PATH):
+        # перемальовувати лише те, що справді змінилось (сервер дописує порожні поля —
+        # через це полички перебудовувались, і екран «стрибав»)
+        if continue_signature() != before[0]:
+            render_continue(focus=False)
+        if favorites_signature() != before[1] and len(page.views) == 1 and \
+                st["mode"] == ("cat", FAV_PATH):
             page.run_task(reload)
+
+    def continue_signature():
+        return [(h["url"], h.get("pos"), h.get("label")) for h in history
+                if not h.get("removed") and not watched(h)][:15]
+
+    def favorites_signature():
+        return [f["url"] for f in favorites if not f.get("removed")]
 
     async def sync_now(manual=False, quiet=False):
         code = settings["sync_code"]
@@ -683,7 +726,16 @@ def main(page: ft.Page):
                        "removed": True}] + [h for h in history if h["url"] != url]
         save_history()
         sync_changed(now=True)
-        render_continue(focus=TV)  # на телевізорі курсор — знову на перший рядок
+        # прибрати лише цю картку, не перебудовуючи поличку (інакше екран «стрибав»)
+        box = continue_list if TV else continue_row
+        box.controls = [c for c in box.controls if c.data != url]
+        continue_section.visible = bool(box.controls)
+        try:
+            continue_section.update()
+        except Exception:
+            pass
+        if TV and box.controls:  # курсор — на перший рядок, щоб не загубився
+            page.run_task(focus_later, box.controls[0].controls[0])
         toast(f"«{old.get('title', '')}» прибрано з історії", ft.Icons.CHECK_CIRCLE_ROUNDED)
 
     def fmt_time(ms):
@@ -1517,7 +1569,8 @@ def main(page: ft.Page):
         banner.update()
 
     def arrow(icon, delta, at):
-        btn = round_button(icon, lambda e: page.run_task(show_slide, hero["i"] + delta), size=46)
+        btn = round_button(icon, lambda e: page.run_task(show_slide, hero["i"] + delta), size=46,
+                           over_image=True)
         holder = ft.Container(btn, top=0, bottom=0, alignment=ft.Alignment.CENTER,
                               opacity=1 if TV else 0, animate_opacity=ui.MED, **{at: 16})
         arrows.append(holder)
@@ -1663,7 +1716,7 @@ def main(page: ft.Page):
                     border=ft.Border.all(1, BORDER), alignment=ft.Alignment.CENTER),
                     lambda e, url=h["url"]: remove_from_history(url), radius=14,
                     focus_bg=(TV_FOCUS_BG, SURFACE))], spacing=12,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER)
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER, data=h["url"])
                 for c, h in zip(cards, items[:6])]
             try:
                 continue_section.update()
@@ -1683,7 +1736,7 @@ def main(page: ft.Page):
                           on_open=lambda item=item: page.run_task(open_title, item),
                           on_remove=lambda url=item["url"]: remove_from_history(url))
             ui.reveal(c)
-            cards.append(ft.Container(c, width=shelf_card_w))
+            cards.append(ft.Container(c, width=shelf_card_w, data=item["url"]))
         continue_row.controls = cards
         try:
             continue_section.update()
@@ -1771,6 +1824,8 @@ def main(page: ft.Page):
             page.run_task(load_home)
 
     def on_resize(e):
+        if st.get("player_resize"):
+            st["player_resize"]()
         if st["mode"][0] == "home" and not TV:  # на телевізорі банера немає
             banner.height = banner_height()
             banner.update()
@@ -2170,13 +2225,18 @@ def main(page: ft.Page):
                     return
                 appearance.save(key, value)
                 show_dialog(ft.AlertDialog(
-                    title=ft.Text("Перезапустіть застосунок", weight=ft.FontWeight.W_800),
+                    title=ft.Text("Перезапустити застосунок?", weight=ft.FontWeight.W_800),
                     bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
-                    content=ft.Text("Новий вигляд застосується, коли ви закриєте й знову "
-                                    "відкриєте UAFix Player.", color=TEXT, width=dialog_width()),
-                    actions=[ft.FilledButton("Зрозуміло", on_click=lambda e: page.pop_dialog(),
-                                             style=ft.ButtonStyle(bgcolor=ACCENT,
-                                                                  color="#FFFFFF"))]))
+                    content=ft.Text("Нова тема застосується після перезапуску — UAFix Player "
+                                    "закриється й одразу відкриється знову.", color=TEXT,
+                                    width=dialog_width()),
+                    actions=[ft.TextButton("Пізніше", on_click=lambda e: page.pop_dialog(),
+                                           style=ft.ButtonStyle(color=MUTED)),
+                             ft.FilledButton("Перезапустити", icon=ft.Icons.RESTART_ALT_ROUNDED,
+                                             autofocus=TV,
+                                             on_click=lambda e: page.run_task(restart_app),
+                                             style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF",
+                                                                  icon_color="#FFFFFF"))]))
 
             current = appearance.load()[key]
             if TV:
@@ -3623,9 +3683,11 @@ def main(page: ft.Page):
                 style,
                 # таймлайн не впритул до країв екрана (особливо в повноекранному режимі)
                 seek_bar_margin=ft.Padding.only(left=24, right=24, bottom=18),
-                # без перемотки подвійним тапом: її бічні зони «з'їдали» звичайний тап, і панель
-                # відкривалась лише з центру екрана; ±10 с — кнопками поруч із ▶/⏸
-                seek_on_double_tap=False,
+                # подвійний тап по лівій / правій частині — перемотка на 10 с (звичайний тап
+                # у будь-якому місці так само показує панель — плеєр ловить його одразу)
+                seek_on_double_tap=True,
+                seek_on_double_tap_backward_duration=ft.Duration(seconds=10),
+                seek_on_double_tap_forward_duration=ft.Duration(seconds=10),
                 # попередня / наступна серія — у центрі, поруч із ±10 с і ▶/⏸
                 primary_button_bar=[
                     prev_slot, ft.Container(width=12),
@@ -3742,6 +3804,7 @@ def main(page: ft.Page):
             st["fullscreen"] = on
             if not on:
                 st["fullscreen_exit"] = time.monotonic()
+                p["auto_fs"] = False  # вийшли (кнопкою чи поворотом) — далі знову за поворотом
             if is_mobile:
                 # на весь екран — обраний масштаб (за замовчуванням «заповнити»: фільми
                 # закодовано в кадр 16:9 з чорними смугами, а екран телефона ширший);
@@ -3767,22 +3830,39 @@ def main(page: ft.Page):
                     return  # лежить на столі чи нахилений — нічого не робимо
                 o["count"] = o["count"] + 1 if s_ == o["state"] else 1
                 o["state"] = s_
-                # лише в момент повороту (два однакові заміри поспіль): ручний вхід/вихід
-                # кнопкою, поки телефон не повертали, не скасовується
-                if o["count"] != 2 or not settings["auto_fullscreen"] or p.get("cast"):
-                    return
-                want = s_ == "land"
-                if want != bool(st.get("fullscreen")):
-                    video.fullscreen = want
+                # Вихід: повернули вертикально — лише якщо в повний екран увійшли саме
+                # поворотом (повноекранний плеєр тримає інтерфейс горизонтальним, тож
+                # «вертикально» видно тільки за датчиком)
+                if o["count"] == 2 and s_ == "port" and p.get("auto_fs") and st.get("fullscreen"):
+                    p["auto_fs"] = False
+                    video.fullscreen = False
                     video.update()
 
+            def on_page_resize():
+                # Вхід: інтерфейс сам повернувся горизонтально. Це стається лише коли
+                # автоповорот у телефоні увімкнено — заблокований поворот поважаємо
+                if not alive():
+                    st["player_resize"] = None
+                    return
+                land = (page.width or 0) > (page.height or 0)
+                was_land, p["last_land"] = p.get("last_land"), land
+                if (land and not was_land and not st.get("fullscreen")
+                        and settings["auto_fullscreen"] and not p.get("cast")
+                        and time.monotonic() - st.get("fullscreen_exit", 0) > 2):
+                    p["auto_fs"] = True
+                    video.fullscreen = True
+                    video.update()
+
+            p["last_land"] = (page.width or 0) > (page.height or 0)
+            st["player_resize"] = on_page_resize
             orient["cb"] = on_orient
             accel.enabled = True
             accel.update()
         st["video"] = video
         bar = drag_area(ft.Container(
             ft.Row([
-                round_button(ft.Icons.ARROW_BACK_IOS_NEW_ROUNDED, lambda e: go_back(), "Назад"),
+                round_button(ft.Icons.ARROW_BACK_IOS_NEW_ROUNDED, lambda e: go_back(), "Назад",
+                             on_dark=True),
                 ft.Column([ft.Text(show, size=15, weight=ft.FontWeight.W_700, color="#FFFFFF",
                                    max_lines=1, overflow=ft.TextOverflow.ELLIPSIS), now],
                           spacing=0, expand=True),
@@ -3837,6 +3917,9 @@ def main(page: ft.Page):
 
             page.run_task(focus_player)
             return ft.Stack([video, tv_overlay], expand=True)  # «Назад» — кнопкою пульта
+        if is_mobile:
+            # телефон: без назви й стрілки над відео — назад системним жестом / кнопкою
+            return video
         return ft.Column([bar, video], expand=True, spacing=0)
 
     async def save_m3u(ctx):

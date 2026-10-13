@@ -151,6 +151,27 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path build/windows/* -DestinationPath UAFix-Player-Windows.zip
 
+      # портативний .exe: запускач на Go з вбудованим zip (tools/win_launcher)
+      - uses: actions/setup-go@v5
+        if: matrix.target == 'windows'
+        with:
+          go-version: '1.22'
+          cache: false
+
+      - name: Portable Windows exe
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: |
+          Copy-Item UAFix-Player-Windows.zip tools/win_launcher/app.zip
+          $ico = Get-ChildItem -Recurse -Filter app_icon.ico build | Select-Object -First 1
+          Push-Location tools/win_launcher
+          if ($ico) {
+            go run github.com/akavel/rsrc@v0.10.2 -ico $ico.FullName -o rsrc.syso
+          }
+          go build -trimpath -ldflags "-H windowsgui -s -w -X main.version=$env:APP_VERSION" -o ../../UAFix-Player-Windows.exe .
+          Pop-Location
+          Get-Item UAFix-Player-Windows.exe | Select-Object Name, Length
+
       - name: Pack Android apk
         if: matrix.target == 'apk'
         run: |
@@ -164,6 +185,7 @@ jobs:
           path: |
             UAFix-Player-*.zip
             UAFix-Player-*.apk
+            UAFix-Player-*.exe
           if-no-files-found: error
 
   release:

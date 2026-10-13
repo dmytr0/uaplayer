@@ -25,6 +25,8 @@ TEMPLATE_URL = "https://github.com/flet-dev/flet/releases/download/v{v}/flet-bui
 
 MAIN_ACTIVITY = '''package {{ cookiecutter.org_name_2 }}.{{ cookiecutter.package_name }}
 
+import android.app.AlarmManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -86,6 +88,19 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
+    /** Перезапуск застосунку: запланувати запуск через пів секунди й завершити процес
+     *  (Python усередині процесу інакше не почне заново). */
+    private fun restartApp() {
+        val launch = packageManager.getLaunchIntentForPackage(packageName) ?: return
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        val pending = PendingIntent.getActivity(
+            this, 0, launch, PendingIntent.FLAG_CANCEL_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val alarm = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        alarm.set(AlarmManager.RTC, System.currentTimeMillis() + 500, pending)
+        finishAffinity()
+        Runtime.getRuntime().exit(0)
+    }
+
     /**
      * uafixupdate://install — Python-частина завантажила оновлення в cache/update.apk і просить
      * відкрити системне вікно встановлення. Береться лише цей фіксований файл із кешу самого
@@ -94,6 +109,10 @@ class MainActivity : FlutterFragmentActivity() {
     private fun handleInstallIntent(intent: Intent?): Boolean {
         val data = intent?.data ?: return false
         if (data.scheme != "uafixupdate") return false
+        if (data.host == "restart") {  // напр. після зміни теми: запуск заново за мить
+            restartApp()
+            return true
+        }
         // update.apk кладе Python-частина в кеш (запасні варіанти — дані застосунку)
         val apk = listOf(cacheDir, filesDir)
             .map { File(it, "update.apk") }.firstOrNull { it.isFile } ?: return true
