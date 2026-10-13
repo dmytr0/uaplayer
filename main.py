@@ -1001,14 +1001,13 @@ def main(page: ft.Page):
 
     drawer_controls += [
         ft.Container(ft.Divider(color=BORDER), padding=ft.Padding.only(left=20, right=20, top=10)),
-        ft.Container(ft.ListTile(
-            leading=ft.Icon(ft.Icons.SETTINGS_ROUNDED, color=MUTED),
-            title=ft.Text("Налаштування", color=TEXT, size=14, weight=ft.FontWeight.W_500),
-            shape=ft.RoundedRectangleBorder(radius=12), content_padding=ft.Padding.only(left=16),
-            on_click=lambda e: page.run_task(open_settings_from_menu)),
-            padding=ft.Padding.only(left=12, right=12, bottom=4)),
+        # такий самий пункт, як решта (раніше — окремий рядок, що виділявся інакше)
+        ft.NavigationDrawerDestination(
+            label="Налаштування", icon=ft.Icon(ft.Icons.SETTINGS_ROUNDED, color=MUTED),
+            selected_icon=ft.Icon(ft.Icons.SETTINGS_ROUNDED, color=ACCENT)),
         ft.Container(ft.Text(f"Версія {updater.VERSION}", size=12, color=MUTED),
-                     padding=ft.Padding.only(left=28, right=20, bottom=24)),
+                     padding=ft.Padding.only(left=28, right=20, top=8,
+                                             bottom=56 if TV else 24)),
     ]
 
     drawer = ft.NavigationDrawer(
@@ -1018,7 +1017,15 @@ def main(page: ft.Page):
         on_change=lambda e: page.run_task(on_nav, e.control.selected_index),
     )
 
+    SETTINGS_NAV = 1 + len(DESTINATIONS)  # «Налаштування» — останній пункт меню
+
     async def on_nav(index):
+        if index == SETTINGS_NAV:
+            drawer.selected_index = st.get("nav_index")  # виділення лишаємо на розділі
+            drawer.update()
+            await open_settings_from_menu()
+            return
+        st["nav_index"] = index
         await home.close_drawer()
         if index == 0:
             go_home()
@@ -1033,7 +1040,7 @@ def main(page: ft.Page):
         # для жанру в меню підсвічується його розділ («Усі фільми» / «Усі серіали»)
         nav_path = genre_root(path) or path
         idx = next((i for i, d in enumerate(DESTINATIONS) if d[1] == nav_path), None)
-        drawer.selected_index = idx + 1 if idx is not None else None
+        drawer.selected_index = st["nav_index"] = idx + 1 if idx is not None else None
         await reload()
 
     # ── рядок жанрів над каталогом
@@ -1542,7 +1549,7 @@ def main(page: ft.Page):
         if not q:
             return
         st["mode"] = ("search", q)
-        drawer.selected_index = None
+        drawer.selected_index = st["nav_index"] = None
         layout_toggle.visible = not TV
         set_heading(f"Пошук: «{q}»")
         await reload()
@@ -1946,7 +1953,7 @@ def main(page: ft.Page):
         st["mode"] = ("home", None)
         refresh_genre_bar()
         st["gen"] += 1
-        drawer.selected_index = 0
+        drawer.selected_index = st["nav_index"] = 0
         set_heading("Головна")
         set_subheading("")
         layout_toggle.visible = False
@@ -2493,6 +2500,7 @@ def main(page: ft.Page):
         )
         guard_back(this_view[0])
         page.views.append(this_view[0])
+        cover_views()
         page.update()
         await asyncio.sleep(0.05)
         ui.reveal(content)
@@ -2551,7 +2559,7 @@ def main(page: ft.Page):
             expanded = description.max_lines is None
             description.max_lines = 4 if expanded else None
             more_btn.content = "Детальніше" if expanded else "Згорнути"
-            page.update()
+            view.update()
 
         more_btn.on_click = toggle_desc
         cast = ft.Text("", size=12, color=MUTED, visible=False)
@@ -2739,11 +2747,12 @@ def main(page: ft.Page):
         )
         guard_back(view)
         page.views.append(view)
+        cover_views()
         page.update()
         await asyncio.sleep(0.05)
         poster.scale = 1
         ui.reveal(hero_info)
-        page.update()
+        view.update()  # лише цей екран (не всю сторінку з картками під ним)
 
         # ── інформація про тайтл
         try:
@@ -2753,7 +2762,7 @@ def main(page: ft.Page):
             ep_status.value = await explain(ex, "сторінку тайтлу")
             ep_progress.visible = False
             ui.reveal(episodes_section)
-            page.update()
+            view.update()
             return
         ctx["info"] = info
         if info["poster"] and info["poster"] != item["poster"]:
@@ -2783,7 +2792,7 @@ def main(page: ft.Page):
             trailer_btn.visible = True
             trailer_btn.on_click = lambda e: page.run_task(ft.UrlLauncher().launch_url, info["trailer"])
         ui.reveal(episodes_section)
-        page.update()
+        view.update()
 
         # ── серії: або плеєри прямо на сторінці (фільм / серіал з плейлистом),
         #    або окремі сторінки серій — тоді лише список, відео шукаємо при запуску
@@ -2794,7 +2803,7 @@ def main(page: ft.Page):
                 seasons = core.group_streams(found)
             else:
                 ep_status.value = "Завантажую список серій…"
-                page.update()
+                view.update()
                 episodes, locked = await asyncio.to_thread(core.list_episodes, item["url"], html)
                 seasons = core.group_episode_pages(episodes, locked)
         except Exception as ex:
@@ -2809,7 +2818,7 @@ def main(page: ft.Page):
             ep_status.value = (await explain(err, "серії")) if err else ""
             episodes_box.content = empty_state(ft.Icons.VIDEOCAM_OFF_ROUNDED, "Потоків не знайдено",
                                                "Можливо, відео ще не додано на сайт")
-            page.update()
+            view.update()
             return
         total = sum(len(s["episodes"]) for s in seasons)
         ep_status.value = f"{total} {plural(total, 'серія', 'серії', 'серій')}"
@@ -2817,7 +2826,7 @@ def main(page: ft.Page):
         play_btn.content, play_btn.icon = "Дивитись", ft.Icons.PLAY_ARROW_ROUNDED
         has_resume = update_resume() is not None
         # після виходу з плеєра кнопку «Продовжити» оновлюємо (нова хвилина)
-        view.data = {"refresh": lambda: (update_resume(), page.update())}
+        view.data = {"refresh": lambda: (update_resume(), view.update())}
         if TV:  # autofocus не спрацьовує на вимкненій кнопці — фокус ставимо, щойно ввімкнули
             page.run_task(focus_later, resume_btn if has_resume else play_btn)
         episodes_section.visible = total > 1  # для фільму вистачає кнопки «Дивитись»
@@ -2825,7 +2834,7 @@ def main(page: ft.Page):
         ctx["voice"] = ctx["voices"][0] if ctx["voices"] else ""
         render_voices(ctx)
         render_seasons(ctx)
-        page.update()
+        view.update()
         if not ctx["voices"]:
             # серії ще без потоків — дізнаємось набір озвучок з першої серії
             page.run_task(detect_voices, ctx)
@@ -3079,6 +3088,7 @@ def main(page: ft.Page):
                                       start_pos=start_pos, before=everything[:start]))]
         guard_back(view, player_back)
         page.views.append(view)
+        cover_views()
         page.update()
 
     def build_player(view, ctx, show, queue, voice, start_pos=None, sub_pref=None, before=()):
@@ -3143,14 +3153,14 @@ def main(page: ft.Page):
             save_setting("sub_scale", scale)
             video.subtitle_configuration = sub_config()
             refresh_bar()
-            page.update()
+            view.update()  # лише цей екран (не всю сторінку з картками під ним)
 
         def set_fit(mode):
             save_setting("fit", mode)
             video.fit = fit_value(st.get("fullscreen", False))
             refresh_fit_button()
             refresh_bar()
-            page.update()
+            view.update()
 
         def cycle_fit(e=None):
             keys = [k for k, _, _ in FIT_MODES]
@@ -3242,7 +3252,7 @@ def main(page: ft.Page):
             p["sub_lang"] = lang
             video.subtitle_track = track(subtitle_for(entries[p["idx"]]))
             refresh_bar()
-            page.update()
+            view.update()
 
         voice_menu = ft.PopupMenuButton(tooltip="Озвучка", **menu_style)
         sub_menu = ft.PopupMenuButton(tooltip="Субтитри", **menu_style)
@@ -3374,7 +3384,7 @@ def main(page: ft.Page):
             video.subtitle_track = track(subtitle_for(entries[0]))
             now.value, now.visible = names[0], bool(names[0])
             refresh_bar()
-            page.update()
+            view.update()
             if pos and pos.in_milliseconds > 3000:
                 p["target"], p["restoring"] = pos, True
                 page.run_task(restore_position)
@@ -3614,7 +3624,7 @@ def main(page: ft.Page):
                 page.run_task(restore_position)
             if resume_here:
                 await video.play()
-            page.update()
+            view.update()
 
         async def seek_by(seconds):
             try:
@@ -3720,6 +3730,20 @@ def main(page: ft.Page):
                                 autofocus=True)
             p["refocus"] = play_pause
             video.controls = None
+
+            def tv_suspend():
+                """Застосунок пішов у фон (заставка телевізора після довгої паузи тощо)."""
+                if alive() and not p.get("paused"):
+                    toggle_play()
+
+            def tv_resume():
+                """Повернулись: фокус — знову на ▶/⏸ (інакше він губився, і OK натискав
+                кнопку сторінки фільму під плеєром)."""
+                if alive():
+                    tv_activity()
+                    page.run_task(focus_later, play_pause)
+
+            st["tv_suspend"], st["tv_resume"] = tv_suspend, tv_resume
 
             tv_bar = ft.ProgressBar(value=0, color=ACCENT, bgcolor="#40FFFFFF", bar_height=8,
                                     border_radius=4, expand=True)
@@ -3952,7 +3976,7 @@ def main(page: ft.Page):
                 now.value, now.visible = names[idx], bool(names[idx])
                 video.subtitle_track = track(subtitle_for(entries[idx]))
                 refresh_bar()
-                page.update()
+                view.update()
 
         async def restore_position():
             """Перемотати на збережену позицію (зміна озвучки, «Продовжити перегляд»).
@@ -4177,10 +4201,21 @@ def main(page: ft.Page):
         pop_view()
         page.run_task(sync_now)  # де зупинились — одразу на інші пристрої
 
+    def cover_views():
+        """Телевізор: екрани під верхнім — неактивні, щоб загублений фокус пульта не потрапив
+        на їхні кнопки (OK натискав «Назад» сторінки фільму під плеєром, і екрани
+        розходились: видно сторінку, а плеєр грає далі)."""
+        if not TV:
+            return
+        for i, v in enumerate(page.views):
+            if v.controls:
+                v.controls[0].disabled = i < len(page.views) - 1
+
     def pop_view():
         if len(page.views) <= 1:
             return
         page.views.pop()
+        cover_views()
         top = page.views[-1]
         if isinstance(top.data, dict) and top.data.get("refresh"):
             top.data["refresh"]()
@@ -4220,6 +4255,17 @@ def main(page: ft.Page):
         elif e.key.upper() == "F" and (e.meta or e.ctrl) and len(page.views) == 1:
             await search.focus()
 
+    def on_lifecycle(e):
+        if not TV or not page.views or page.views[-1].route != "/play":
+            return
+        if e.state in (ft.AppLifecycleState.HIDE, ft.AppLifecycleState.PAUSE):
+            if st.get("tv_suspend"):
+                st["tv_suspend"]()
+        elif e.state in (ft.AppLifecycleState.SHOW, ft.AppLifecycleState.RESUME):
+            if st.get("tv_resume"):
+                st["tv_resume"]()
+
+    page.on_app_lifecycle_state_change = on_lifecycle
     page.on_view_pop = lambda e: go_back()
     page.on_keyboard_event = on_key
     page.views.clear()
