@@ -42,8 +42,10 @@ ACCENT_GRADIENT = ft.LinearGradient(
 def theme():
     return ft.Theme(
         color_scheme_seed=ACCENT,
+        # surface_tint прозорий: Material 3 інакше домішує оранжевий до фону меню й вікон
         color_scheme=ft.ColorScheme(primary=ACCENT, surface=BG, on_surface=TEXT,
-                                    on_surface_variant=MUTED),
+                                    on_surface_variant=MUTED,
+                                    surface_tint=ft.Colors.TRANSPARENT),
         page_transitions=ft.PageTransitionsTheme(
             macos=ft.PageTransitionTheme.FADE_FORWARDS,
             windows=ft.PageTransitionTheme.FADE_FORWARDS,
@@ -54,6 +56,26 @@ def theme():
         scrollbar_theme=ft.ScrollbarTheme(
             thumb_color=ft.Colors.with_opacity(0.25, TEXT), thickness=6, radius=3),
     )
+
+
+def menu_style():
+    """Випадаючий список: фон як у вікон застосунку (без брунатного відтінку Material 3)."""
+    return ft.MenuStyle(
+        bgcolor=SURFACE_3,
+        shadow_color=ft.Colors.with_opacity(0.4, "#000000"), elevation=8,
+        shape=ft.RoundedRectangleBorder(radius=12), side=ft.BorderSide(1, BORDER),
+        padding=ft.Padding.symmetric(vertical=6))
+
+
+def option_style():
+    """Пункт випадаючого списку: вибраний / під курсором — ледь світліший фон того ж тону."""
+    soft = ft.Colors.with_opacity(0.08, TEXT)
+    return ft.ButtonStyle(
+        color=TEXT,
+        bgcolor={ft.ControlState.SELECTED: soft, ft.ControlState.FOCUSED: soft,
+                 ft.ControlState.HOVERED: soft, ft.ControlState.DEFAULT: ft.Colors.TRANSPARENT},
+        overlay_color=ft.Colors.with_opacity(0.06, TEXT),
+        padding=ft.Padding.symmetric(horizontal=16, vertical=14))
 
 
 def hovered(e):

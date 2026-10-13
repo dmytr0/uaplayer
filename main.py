@@ -137,7 +137,23 @@ def plural(n, one, few, many):
     return one if n == 1 else few if 2 <= n <= 4 else many
 
 
-def main(page: ft.Page):
+def quiet():
+    """Без автоматичного оновлення всієї сторінки після цієї події. Flet після кожного
+    обробника, що сам нічого не оновив, перевіряє на зміни ВЕСЬ застосунок — для частих
+    подій (кожна кнопка пульта, прокрутка, фокус) це на телевізорі з довгим списком тайтлів
+    займало секунди. Такі обробники оновлюють те, що змінили, явно."""
+    ft.context.disable_auto_update()
+
+
+# Перебудова інтерфейсу «на льоту» (зміна теми без перезапуску): кожен запуск main —
+# нове «покоління»; фонові цикли попереднього бачать, що їх замінили, і зупиняються
+RUN = {"gen": 0, "first": True}
+UI_COLORS = ("ACCENT", "BG", "BORDER", "MUTED", "SURFACE", "SURFACE_2", "SURFACE_3", "TEXT")
+
+
+def main(page: ft.Page, reopen=None):
+    gen, first = RUN["gen"], RUN["first"]
+    RUN["first"] = False
     page.title = "UAFix Player"
     page.theme_mode = ft.ThemeMode.LIGHT if ui.LIGHT else ft.ThemeMode.DARK
     page.theme = page.dark_theme = ui.theme()
@@ -164,7 +180,7 @@ def main(page: ft.Page):
     is_mobile = page.platform in (ft.PagePlatform.ANDROID, ft.PagePlatform.IOS) and not TV
     is_desktop = page.platform in (ft.PagePlatform.MACOS, ft.PagePlatform.WINDOWS,
                                    ft.PagePlatform.LINUX)
-    if is_desktop:
+    if is_desktop and first:
         page.window.width, page.window.height = 1240, 800
         page.window.min_width, page.window.min_height = 760, 540
         page.window.bgcolor = BG
@@ -223,10 +239,14 @@ def main(page: ft.Page):
               if focus_bg else ft.Colors.TRANSPARENT)
         # колір тексту й іконок без явного кольору всередині — теж від стану (миттєво):
         # у стилі «Як Google TV» на білій плитці вони стають темними
+        def click(e):
+            quiet()  # дія сама оновлює, що змінила (інакше Flet перевіряв увесь застосунок)
+            return on_click(e)
+
         return ft.Button(
-            content=content, on_click=on_click, autofocus=autofocus,
-            on_focus=(lambda e: on_focus_change(True)) if on_focus_change else None,
-            on_blur=(lambda e: on_focus_change(False)) if on_focus_change else None,
+            content=content, on_click=click, autofocus=autofocus,
+            on_focus=(lambda e: (quiet(), on_focus_change(True))) if on_focus_change else None,
+            on_blur=(lambda e: (quiet(), on_focus_change(False))) if on_focus_change else None,
             style=ft.ButtonStyle(
                 padding=0, elevation=0, bgcolor=bg, side=TV_FOCUS_SIDE if TV else None,
                 color={ft.ControlState.FOCUSED: TV_FOCUS_FG, ft.ControlState.DEFAULT: TEXT},
@@ -666,10 +686,12 @@ def main(page: ft.Page):
         await open_settings()
 
     async def startup():
-        updater.mark_started()  # для скрипта оновлення: нова версія запустилась
         await load_settings()
-        page.run_task(sync_now, True, True)  # при запуску — без спливаючого повідомлення
         page.run_task(sync_loop)
+        if not first:
+            return  # перебудова після зміни теми — решта вже зроблена при запуску
+        updater.mark_started()  # для скрипта оновлення: нова версія запустилась
+        page.run_task(sync_now, True, True)  # при запуску — без спливаючого повідомлення
         await show_whats_new()
         await check_updates()
 
@@ -757,6 +779,8 @@ def main(page: ft.Page):
         # раз на хвилину: свої зміни (якщо є) — на сервер, чужі — сюди
         while True:
             await asyncio.sleep(60)
+            if RUN["gen"] != gen:
+                return  # інтерфейс перебудовано — цикл веде вже новий
             await sync_now()
 
     def history_entry(url):
@@ -772,17 +796,38 @@ def main(page: ft.Page):
                        "removed": True}] + [h for h in history if h["url"] != url]
         save_history()
         sync_changed(now=True)
-        # прибрати лише цю картку, не перебудовуючи поличку (інакше екран «стрибав»)
-        box = continue_list if TV else continue_row
-        box.controls = [c for c in box.controls if c.data != url]
-        continue_section.visible = bool(box.controls)
+        if TV:
+            # прибрати лише цей рядок, не перебудовуючи список (інакше екран «стрибав»)
+            box = continue_list
+            box.controls = [c for c in box.controls if c.data != url]
+            continue_section.visible = bool(box.controls)
+            try:
+                continue_section.update()
+            except Exception:
+                pass
+            if box.controls:  # курсор — на перший рядок, щоб не загубився
+                page.run_task(focus_later, box.controls[0].controls[0])
+            return
+        # телефон / ПК: картка плавно стискається й зникає, але її місце в рядку лишається —
+        # якщо її вийняти, наступні картки зсуваються, перебудовуються й блимають постерами
+        # (зовсім прибереться при наступному оновленні поличк)
+        card = next((c for c in continue_row.controls if c.data == url), None)
+        if card is None:
+            return
+        card.width, card.opacity, card.data = 0, 0, None
         try:
-            continue_section.update()
+            card.update()
         except Exception:
             pass
-        if TV and box.controls:  # курсор — на перший рядок, щоб не загубився
-            page.run_task(focus_later, box.controls[0].controls[0])
-        toast(f"«{old.get('title', '')}» прибрано з історії", ft.Icons.CHECK_CIRCLE_ROUNDED)
+        if not any(c.data for c in continue_row.controls):
+            async def hide_section():
+                await asyncio.sleep(0.35)
+                continue_section.visible = False
+                try:
+                    continue_section.update()
+                except Exception:
+                    pass
+            page.run_task(hide_section)
 
     def fmt_time(ms):
         sec = int(ms // 1000)
@@ -1354,6 +1399,7 @@ def main(page: ft.Page):
 
     # ═════════════════════ каталог ═════════════════════
     def on_scroll(e: ft.OnScrollEvent):
+        quiet()
         if e.pixels >= e.max_scroll_extent - 700:
             page.run_task(load_more)
 
@@ -1595,10 +1641,12 @@ def main(page: ft.Page):
             key=f"img{item['url']}")
 
     def banner_focus(e):
+        quiet()
         hero["focus"] = True
         hero["autofocused"] = True
 
     def banner_blur(e):
+        quiet()
         hero["focus"] = False
 
     def slide_text(item):
@@ -1689,7 +1737,7 @@ def main(page: ft.Page):
     async def autoplay(token):
         while hero["timer"] == token:
             await asyncio.sleep(BANNER_INTERVAL)
-            if hero["timer"] != token:
+            if hero["timer"] != token or RUN["gen"] != gen:
                 return
             # банер займає майже все вікно, тож на паузу при наведенні не ставимо —
             # стрілки й крапки дозволяють перемкнути вручну
@@ -1875,7 +1923,8 @@ def main(page: ft.Page):
                           on_open=lambda item=item: page.run_task(open_title, item),
                           on_remove=lambda url=item["url"]: remove_from_history(url))
             ui.reveal(c)
-            cards.append(ft.Container(c, width=shelf_card_w, data=item["url"]))
+            cards.append(ft.Container(c, width=shelf_card_w, data=item["url"],
+                                      animate=ui.MED, animate_opacity=ui.FAST))
         continue_row.controls = cards
         try:
             continue_section.update()
@@ -1963,6 +2012,7 @@ def main(page: ft.Page):
             page.run_task(load_home)
 
     def on_resize(e):
+        quiet()
         if st.get("player_resize"):
             st["player_resize"]()
         if st["mode"][0] == "home" and not TV:  # на телевізорі банера немає
@@ -2137,8 +2187,9 @@ def main(page: ft.Page):
             return ft.Dropdown(
                 value=str(current), width=150 if is_mobile else 190, dense=True, border_radius=10, filled=True,
                 fill_color=SURFACE_3, border_color=BORDER, color=TEXT, text_size=14,
-                options=[ft.DropdownOption(key=str(v), text=n) for n, v in options],
-                on_select=select)
+                options=[ft.DropdownOption(key=str(v), text=n, style=ui.option_style())
+                         for n, v in options],
+                menu_style=ui.menu_style(), on_select=select)
 
         def switch(key):
             if TV:
@@ -2384,19 +2435,12 @@ def main(page: ft.Page):
                 if value == appearance.load()[key]:
                     return
                 appearance.save(key, value)
-                show_dialog(ft.AlertDialog(
-                    title=ft.Text("Перезапустити застосунок?", weight=ft.FontWeight.W_800),
-                    bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
-                    content=ft.Text("Нова тема застосується після перезапуску — UAFix Player "
-                                    "закриється й одразу відкриється знову.", color=TEXT,
-                                    width=dialog_width()),
-                    actions=[ft.TextButton("Пізніше", on_click=lambda e: page.pop_dialog(),
-                                           style=ft.ButtonStyle(color=MUTED)),
-                             ft.FilledButton("Перезапустити", icon=ft.Icons.RESTART_ALT_ROUNDED,
-                                             autofocus=TV,
-                                             on_click=lambda e: page.run_task(restart_app),
-                                             style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF",
-                                                                  icon_color="#FFFFFF"))]))
+
+                async def apply():
+                    await asyncio.sleep(0.2)  # дати списку закритися
+                    st["rebuild_with_theme"]()
+
+                page.run_task(apply)
 
             current = appearance.load()[key]
             if TV:
@@ -2414,8 +2458,9 @@ def main(page: ft.Page):
             return ft.Dropdown(
                 value=current, width=150 if is_mobile else 190, dense=True, border_radius=10,
                 filled=True, fill_color=SURFACE_3, border_color=BORDER, color=TEXT, text_size=14,
-                options=[ft.DropdownOption(key=v, text=n) for n, v in options],
-                on_select=lambda e: on_pick(e.control.value))
+                options=[ft.DropdownOption(key=v, text=n, style=ui.option_style())
+                         for n, v in options],
+                menu_style=ui.menu_style(), on_select=lambda e: on_pick(e.control.value))
 
         groups = {  # будуються лише при відкритті своєї сторінки
             "playback": lambda: [section("Відтворення", [
@@ -2471,7 +2516,7 @@ def main(page: ft.Page):
             heading = next(t for k, t, _, _ in SETTINGS_GROUPS if k == group)
         else:
             sections = [section("", [
-                row(ft.Icons.DARK_MODE_OUTLINED, "Тема", "Діє після перезапуску застосунку",
+                row(ft.Icons.DARK_MODE_OUTLINED, "Тема", "Світла чи темна",
                     trailing=appearance_choice("theme", [("Темна", "dark"), ("Світла", "light")])),
             ]), section("", [
                 row(icon, title, subtitle,
@@ -2729,6 +2774,7 @@ def main(page: ft.Page):
         )
 
         def on_scroll(e: ft.OnScrollEvent):
+            quiet()
             compact = e.pixels > 40
             if compact == ctx.get("compact", False):
                 return
@@ -4227,11 +4273,15 @@ def main(page: ft.Page):
         page.update()
 
     BACK_KEYS = ("Escape", "Go Back", "Browser Back")
+    # гучність, вимкнення звуку, живлення — панель плеєра не показують
+    QUIET_KEYS = ("Audio Volume Up", "Audio Volume Down", "Audio Volume Mute", "Volume Up",
+                  "Volume Down", "Volume Mute", "Power", "Sleep", "Wake Up")
 
     async def on_key(e: ft.KeyboardEvent):
+        quiet()  # що змінюється — оновлюється явно (див. quiet)
         if TV and page.views and page.views[-1].route == "/play":
-            if st.get("tv_activity") and e.key not in BACK_KEYS:
-                st["tv_activity"]()  # будь-яка кнопка пульта (крім «Назад») показує панель
+            if st.get("tv_activity") and e.key not in BACK_KEYS and e.key not in QUIET_KEYS:
+                st["tv_activity"]()  # кнопка пульта (крім «Назад» і гучності) показує панель
             if st.get("tv_key") and await st["tv_key"](e.key):
                 return
             if e.key in ("Media Play Pause", "Media Play", "Media Pause") and st.get("play_pause"):
@@ -4256,6 +4306,7 @@ def main(page: ft.Page):
             await search.focus()
 
     def on_lifecycle(e):
+        quiet()
         if not TV or not page.views or page.views[-1].route != "/play":
             return
         if e.state in (ft.AppLifecycleState.HIDE, ft.AppLifecycleState.PAUSE):
@@ -4271,10 +4322,24 @@ def main(page: ft.Page):
     page.views.clear()
     page.views.append(home)
     page.update()
-    if is_desktop:
+    if is_desktop and first:
         page.run_task(page.window.center)
     page.run_task(startup)
     go_home()
+    if reopen == "settings":
+        page.run_task(open_settings)
+
+    def rebuild_with_theme():
+        """Нова тема — одразу: перечитати палітру й перебудувати інтерфейс (без перезапуску)."""
+        import importlib
+        appearance.CURRENT = appearance.load()
+        importlib.reload(ui)
+        for name in UI_COLORS:
+            globals()[name] = getattr(ui, name)
+        RUN["gen"] += 1
+        main(page, reopen="settings")  # старі екрани main замінить новими наприкінці
+
+    st["rebuild_with_theme"] = rebuild_with_theme
 
 
 if __name__ == "__main__":
