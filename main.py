@@ -1944,6 +1944,27 @@ def main(page: ft.Page):
     if is_android:
         home.can_pop, home.on_confirm_pop = False, home_back
 
+    def guard_back(view, handler=None):
+        """Android: системне «Назад» спершу обробляємо самі. Інакше Flet одразу закриває
+        весь екран — навіть коли поверх відкрите вікно (вибір якості в плеєрі): вікно
+        лишалось «осиротілим», і застосунок закривався. Тепер відкрите вікно закриває
+        сам Android (воно — верхній маршрут), а сюди приходить «Назад» для екрана."""
+        if not is_android:
+            return
+
+        async def confirm(e):
+            await view.confirm_pop(False)
+            if page.views and page.views[-1] is view:
+                (handler or go_back)()
+
+        view.can_pop, view.on_confirm_pop = False, confirm
+
+    def player_back():
+        # телевізор: «Назад», поки видно панель плеєра, — лише ховає її
+        if st.get("tv_back") and st["tv_back"]():
+            return
+        go_back()
+
     # ═════════════════════ налаштування ═════════════════════
     SETTINGS_GROUPS = [
         # (ключ, назва, іконка, підпис у списку)
@@ -2424,6 +2445,7 @@ def main(page: ft.Page):
             route=f"/settings/{group or ''}", padding=0, bgcolor=BG,
             controls=[safe(ft.Column([drag_area(bar), body_col], expand=True, spacing=0))],
         )
+        guard_back(this_view[0])
         page.views.append(this_view[0])
         page.update()
         await asyncio.sleep(0.05)
@@ -2669,6 +2691,7 @@ def main(page: ft.Page):
             route="/title", padding=0, bgcolor=BG,
             controls=[safe(ft.Column([title_bar, scroller], expand=True, spacing=0))],
         )
+        guard_back(view)
         page.views.append(view)
         page.update()
         await asyncio.sleep(0.05)
@@ -3008,6 +3031,7 @@ def main(page: ft.Page):
         start_pos = ft.Duration(milliseconds=int(start_ms)) if start_ms else None
         view.controls = [safe(build_player(view, ctx, show, everything[start:], ctx.get("voice", ""),
                                       start_pos=start_pos, before=everything[:start]))]
+        guard_back(view, player_back)
         page.views.append(view)
         page.update()
 
@@ -3755,11 +3779,7 @@ def main(page: ft.Page):
             # будь-яка кнопка пульта показує її знову.
             p["shown"], p["hide_token"] = True, 0
 
-            async def hide_later(token):
-                await asyncio.sleep(5)
-                if (p["hide_token"] != token or p.get("paused") or p.get("dialog")
-                        or p.get("seek_target") is not None or not p["shown"] or not alive()):
-                    return
+            def hide_panel():
                 p["shown"] = False
                 # схована панель втрачає фокус, а on_blur при цьому не приходить
                 p["timeline_focus"] = False
@@ -3767,6 +3787,25 @@ def main(page: ft.Page):
                 tv_bar.bar_height, tv_hint.value = 8, ""
                 tv_overlay.visible = False
                 tv_overlay.update()
+
+            async def hide_later(token):
+                await asyncio.sleep(5)
+                if (p["hide_token"] != token or p.get("paused") or p.get("dialog")
+                        or p.get("seek_target") is not None or not p["shown"] or not alive()):
+                    return
+                hide_panel()
+
+            def tv_back():
+                """«Назад» пульта: видно панель — сховати її (вийти — наступним «Назад»)."""
+                if alive() and p.get("dialog"):
+                    return True  # відкрите вікно вибору закривається саме
+                if not alive() or not p["shown"]:
+                    return False
+                p["hide_token"] += 1
+                hide_panel()
+                return True
+
+            st["tv_back"] = tv_back
 
             def tv_activity():
                 if not p["shown"]:
@@ -4093,10 +4132,12 @@ def main(page: ft.Page):
             page.run_task(focus_later, st["return_focus"])
         page.update()
 
+    BACK_KEYS = ("Escape", "Go Back", "Browser Back")
+
     async def on_key(e: ft.KeyboardEvent):
         if TV and page.views and page.views[-1].route == "/play":
-            if st.get("tv_activity"):
-                st["tv_activity"]()  # будь-яка кнопка пульта показує панель плеєра
+            if st.get("tv_activity") and e.key not in BACK_KEYS:
+                st["tv_activity"]()  # будь-яка кнопка пульта (крім «Назад») показує панель
             if st.get("tv_key") and await st["tv_key"](e.key):
                 return
             if e.key in ("Media Play Pause", "Media Play", "Media Pause") and st.get("play_pause"):
@@ -4116,7 +4157,7 @@ def main(page: ft.Page):
                 video.update()
             st["fullscreen"] = False
         elif e.key == "Escape" and len(page.views) > 1:
-            go_back()
+            player_back() if page.views[-1].route == "/play" else go_back()
         elif e.key.upper() == "F" and (e.meta or e.ctrl) and len(page.views) == 1:
             await search.focus()
 

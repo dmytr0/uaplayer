@@ -204,7 +204,9 @@ def _spawn(platform_name, script):
         subprocess.Popen(["/bin/sh", script], start_new_session=True,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
-        flags = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED | NEW_GROUP | NO_WINDOW
+        # лише NO_WINDOW: прихована консоль, яку успадковують timeout / tasklist усередині
+        # (з DETACHED у cmd консолі не було, і кожна така команда відкривала своє вікно)
+        flags = 0x00000200 | 0x08000000  # NEW_PROCESS_GROUP | CREATE_NO_WINDOW
         subprocess.Popen(["cmd", "/c", script], creationflags=flags, close_fds=True,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
