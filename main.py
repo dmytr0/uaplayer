@@ -159,6 +159,8 @@ def main(page: ft.Page):
     page.bgcolor = BG
     is_mac = page.platform == ft.PagePlatform.MACOS
     # телевізор — Android, але з розміткою «як на ПК» і керуванням з пульта
+    # на Android TV Flet повідомляє окрему платформу ANDROID_TV — для нас це той самий Android
+    is_android = page.platform in (ft.PagePlatform.ANDROID, ft.PagePlatform.ANDROID_TV)
     is_mobile = page.platform in (ft.PagePlatform.ANDROID, ft.PagePlatform.IOS) and not TV
     is_desktop = page.platform in (ft.PagePlatform.MACOS, ft.PagePlatform.WINDOWS,
                                    ft.PagePlatform.LINUX)
@@ -355,7 +357,8 @@ def main(page: ft.Page):
 
     # ── оновлення через GitHub Releases
     UPDATE_CHECK_EVERY = 6 * 3600  # автоматично — не частіше ніж раз на 6 годин
-    platform_name = {ft.PagePlatform.ANDROID: "android", ft.PagePlatform.MACOS: "macos",
+    platform_name = {ft.PagePlatform.ANDROID: "android", ft.PagePlatform.ANDROID_TV: "android",
+                     ft.PagePlatform.MACOS: "macos",
                      ft.PagePlatform.WINDOWS: "windows"}.get(page.platform)
 
     def dialog_width():
@@ -1853,7 +1856,7 @@ def main(page: ft.Page):
         home.can_pop, home.on_confirm_pop = False, home_back
         page.update()
 
-    if page.platform == ft.PagePlatform.ANDROID:
+    if is_android:
         home.can_pop, home.on_confirm_pop = False, home_back
 
     # ═════════════════════ налаштування ═════════════════════
@@ -2492,7 +2495,7 @@ def main(page: ft.Page):
         ctx["voice_box"] = voice_box
 
         actions_row = ft.Row([resume_btn, play_btn, fav_btn, trailer_btn, m3u_btn, site_btn],
-                             spacing=10 if not TV else 14, wrap=not TV)
+                             spacing=10 if not TV else 12, wrap=True, run_spacing=12)
         if TV:
             # курсор на кнопках під постером — сторінка вгору: видно постер і опис (самі вони
             # фокус не отримують, тож інакше пульт стрибав одразу на «Назад»)
@@ -2506,14 +2509,17 @@ def main(page: ft.Page):
             description, more_btn,
             ft.Container(height=8),
             voice_box,
-            # на телевізорі кнопки — окремим рядком під постером (див. нижче), а не з переносом
+            # на телевізорі кнопки — одразу під постером (див. нижче): під довгим описом вони
+            # опинялися внизу екрана й ховалися, коли сторінка прокручувалась угору
             *([] if TV else [actions_row]),
             ft.Container(height=4),
             cast,
         ], spacing=6), padding=ft.Padding.only(top=8)))
 
         hero = ft.ResponsiveRow([
-            ft.Container(poster, col={"xs": 12, "md": 6, "lg": 5},
+            ft.Container(ft.Column([poster, ft.Container(actions_row, padding=ft.Padding.only(top=20))],
+                                   spacing=0) if TV else poster,
+                         col={"xs": 12, "md": 6, "lg": 5},
                          alignment=ft.Alignment.CENTER if is_mobile else ft.Alignment.TOP_LEFT),
             ft.Container(hero_info, col={"xs": 12, "md": 6, "lg": 7}),
         ], spacing=36, run_spacing=24)
@@ -2544,9 +2550,7 @@ def main(page: ft.Page):
         ctx.update(seasons_row=seasons_row, episodes_box=episodes_box)
 
         content = ft.Container(
-            ft.Column([hero, *([ft.Container(actions_row, padding=ft.Padding.only(top=24))]
-                               if TV else []),
-                       ft.Container(height=36), episodes_section], spacing=0),
+            ft.Column([hero, ft.Container(height=36), episodes_section], spacing=0),
             padding=ft.Padding.only(left=side_pad, right=side_pad, top=8 if is_mobile else 16,
                                     bottom=60),
         )
@@ -2746,21 +2750,35 @@ def main(page: ft.Page):
             ctx["voice_selected"] = True  # на TV фокус повертається на вибрану озвучку
             render_voices(ctx)
             row.update()
+            if TV and ctx.get("voice_chip"):
+                # autofocus у перебудованому рядку не спрацьовує — фокус ставимо явно,
+                # інакше він стрибав угору на «Детальніше»
+                page.run_task(ctx["voice_chip"].focus)
 
         chips = []
         for v in voices:
             on = v == ctx["voice"]
-            chips.append(tv_tap(ft.Container(
+            chip = ft.Container(
                 ft.Row([ft.Icon(voice_icon(v), size=16, color="#FFFFFF" if on else MUTED),
                         ft.Text(v, size=13, weight=ft.FontWeight.W_600,
                                 color="#FFFFFF" if on else TEXT)], spacing=8, tight=True),
                 padding=ft.Padding.symmetric(horizontal=14, vertical=9), border_radius=12,
                 gradient=ui.ACCENT_GRADIENT if on else None, bgcolor=None if on else SURFACE_2,
                 border=ft.Border.all(1, BORDER), animate=ui.FAST,
-                tooltip="Українська озвучка" if not core.is_original(v)
+                tooltip=None if TV else "Українська озвучка" if not core.is_original(v)
                 else "Оригінальна доріжка з субтитрами",
                 on_click=lambda e, v=v: select(v),
-            ), lambda e, v=v: select(v), autofocus=on and ctx.get("voice_selected", False)))
+            )
+
+            def ring(f, chip=chip):
+                # рамку фокуса кнопки тут не видно (рядок у контейнері, що розгортається) —
+                # малюємо її на самому чипі
+                chip.border = ft.Border.all(3, focus_ring) if f else ft.Border.all(1, BORDER)
+
+            chips.append(tv_tap(chip, lambda e, v=v: select(v), highlight=ring,
+                                autofocus=on and ctx.get("voice_selected", False)))
+            if on:
+                ctx["voice_chip"] = chips[-1]
         row.controls = [ft.Text("Озвучка", size=13, color=MUTED, weight=ft.FontWeight.W_600),
                         *chips]
 
