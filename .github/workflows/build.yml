@@ -11,6 +11,10 @@ on:
         type: choice
         default: all
         options: [all, android, macos, windows]
+      mac_runner:
+        description: "Mac-сервер (коли macos-latest на Apple Silicon довго недоступний — macos-15-intel)"
+        type: string
+        default: macos-latest
 
 env:
   PYTHONUTF8: "1"            # кирилиця у виводі flet build на Windows
@@ -27,10 +31,11 @@ jobs:
         shell: python
         env:
           PLATFORMS: ${{ github.event.inputs.platforms || 'all' }}
+          MAC_RUNNER: ${{ github.event.inputs.mac_runner || 'macos-latest' }}
         run: |
           import json, os
           jobs = [
-              {"name": "macOS", "os": "macos-latest", "target": "macos",
+              {"name": "macOS", "os": os.environ["MAC_RUNNER"], "target": "macos",
                "artifact": "UAFix-Player-macOS", "group": "macos"},
               {"name": "Windows", "os": "windows-latest", "target": "windows",
                "artifact": "UAFix-Player-Windows", "group": "windows"},
