@@ -165,20 +165,21 @@ def mark_started():
 
 def _mac_relaunch(app, marker, log):
     """Фрагмент sh: відкрити застосунок і дочекатися, поки він відзвітує про старт (позначка).
-    Перший запуск щойно заміненого застосунку може тривати довго — macOS перевіряє всі нові
-    файли (сотні бібліотек вбудованого Python). Тому чекаємо до 3 хв і НЕ вбиваємо його:
-    раніше скрипт через 25 с закривав і відкривав знову, перевірка починалась наново,
-    і вікно так і висіло. Повторно відкриваємо лише якщо процес сам закрився без старту."""
+    Порожнє вікно після оновлення (до 1.2.6) було не через довгу перевірку файлів macOS:
+    `open` передавав новій версії порт FLET_DART_BRIDGE_PORT старої, і вона чекала на нього
+    вічно. Тепер скрипт стартує з чистим середовищем (_clean_env), а `open` ще й явно
+    без цих змінних. Чекаємо до 3 хв; повторно відкриваємо, лише якщо процес закрився."""
     return f'''
+OPEN="/usr/bin/env -u FLET_DART_BRIDGE_PORT -u FLET_DART_BRIDGE_EXIT_PORT -u PYTHONPATH -u PYTHONHOME open"
 rm -f "{marker}"
-open "{app}"
+$OPEN "{app}"
 i=0
 while [ $i -lt 360 ] && [ ! -f "{marker}" ]; do
   sleep 0.5; i=$((i+1))
   if [ $i -eq 20 ] || [ $i -eq 120 ]; then
     if ! pgrep -f "{app}/Contents/MacOS/" >/dev/null; then
       echo "$(date) app exited before start, reopening" >> "{log}"
-      open "{app}"
+      $OPEN "{app}"
     fi
   fi
 done
@@ -205,10 +206,20 @@ start "" "{exe}"
 :started'''
 
 
+def _clean_env():
+    """Середовище без шляхів і портів вбудованого Python / Flet ЦІЄЇ версії. Інакше нова
+    версія їх успадковує: на Windows не стартувала, а на Mac (`open` передає змінні)
+    підключалась до порту FLET_DART_BRIDGE_PORT старої й висіла з порожнім вікном."""
+    import os
+    drop = ("PYTHON", "FLET_", "SERIOUS_", "UAFIX_", "SSL_CERT", "REQUESTS_CA",
+            "TCL_LIBRARY", "TK_LIBRARY")
+    return {k: v for k, v in os.environ.items() if not k.upper().startswith(drop)}
+
+
 def _spawn(platform_name, script):
     import subprocess
     if platform_name == "macos":
-        subprocess.Popen(["/bin/sh", script], start_new_session=True,
+        subprocess.Popen(["/bin/sh", script], start_new_session=True, env=_clean_env(),
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
         # лише NO_WINDOW: прихована консоль, яку успадковують timeout / tasklist усередині
@@ -223,13 +234,8 @@ def _start_launcher(exe, *args):
     дочірнім процесом, як це робить Orange Audio Lab: він живе далі, коли ми закриємось.
     Спершу — з виходом із «завдання» Windows (якщо нас запустили в такому, що закриває
     дочірні процеси разом із батьківським), а якщо це заборонено — без нього."""
-    import os
     import subprocess
-    # чисте середовище: без шляхів вбудованого Python / Flet ЦІЄЇ версії (інакше нова
-    # версія стартувала з ними й не запускалась — див. також cleanEnv у запускачі)
-    drop = ("PYTHON", "FLET_", "SERIOUS_", "UAFIX_", "SSL_CERT", "REQUESTS_CA",
-            "TCL_LIBRARY", "TK_LIBRARY")
-    env = {k: v for k, v in os.environ.items() if not k.upper().startswith(drop)}
+    env = _clean_env()  # див. також cleanEnv у запускачі
     for flags in (0x00000200 | 0x01000000, 0x00000200):  # NEW_PROCESS_GROUP [| BREAKAWAY]
         try:
             proc = subprocess.Popen([exe, *args], creationflags=flags, close_fds=True, env=env,
