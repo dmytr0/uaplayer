@@ -22,6 +22,12 @@ copyright = "UAFix Player"
 path = "."
 exclude = ["run.log", "run2.log", "README.md", ".github", "icon_options", "dist", "tools", "android_template", "CHANGELOG.md", "sync_worker", "preview"]
 
+# Windows: вікно створюється прихованим, і застосунок показує його вже зі своєю верхньою
+# панеллю (інакше спершу на мить з'являлось вікно із системним заголовком, потім —
+# перебудовувалось, наче закрилось і відкрилось)
+[tool.flet.windows.app]
+hide_window_on_start = true
+
 [tool.flet.android]
 # фон адаптивної іконки — як у самої іконки (інакше Flet підкладає білий і з'являється ореол);
 # сама іконка — assets/icon_android.png на всю площу, зміст у безпечній зоні

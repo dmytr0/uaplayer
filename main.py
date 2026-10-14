@@ -198,6 +198,9 @@ def main(page: ft.Page, reopen=None):
         # кнопки вікна (згорнути / розгорнути / закрити) — власні, праворуч (win_buttons)
         page.window.title_bar_hidden = True
         page.window.title_bar_buttons_hidden = True
+        # вікно створене прихованим (pyproject: tool.flet.windows.app.hide_window_on_start) —
+        # показуємо, коли вже без системного заголовка
+        page.window.visible = True
 
     def win_buttons(on_dark=False):
         """Кнопки вікна Windows у стилі Windows 11 (на інших системах — нічого)."""
