@@ -14,6 +14,7 @@ import (
 	"archive/zip"
 	"bytes"
 	_ "embed"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -126,21 +127,64 @@ func copyOnce(src, dst string) error {
 	return nil
 }
 
+// logf дописує рядок у %LOCALAPPDATA%\UAFix Player\launcher.log (діагностика оновлень).
+func logf(base, format string, args ...any) {
+	os.MkdirAll(base, 0o755)
+	f, err := os.OpenFile(filepath.Join(base, "launcher.log"),
+		os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s [launcher %s] %s\n", time.Now().Format("2006-01-02 15:04:05"), version,
+		fmt.Sprintf(format, args...))
+}
+
+// cleanEnv — середовище без змінних, які ставить усередині себе запущений застосунок
+// (вбудований Python і Flet: PYTHONHOME, PYTHONPATH, FLET_…, сертифікати). Коли попередня
+// версія запускає нову (оновлення), нова інакше успадковувала шляхи до файлів СТАРОЇ версії
+// (а їх одразу прибираємо) — і не стартувала. Вручну з Провідника все працювало.
+func cleanEnv() []string {
+	drop := []string{"PYTHON", "FLET_", "SERIOUS_", "UAFIX_", "SSL_CERT", "REQUESTS_CA",
+		"TCL_LIBRARY", "TK_LIBRARY"}
+	var env []string
+	for _, kv := range os.Environ() {
+		up := strings.ToUpper(kv)
+		keep := true
+		for _, p := range drop {
+			if strings.HasPrefix(up, p) {
+				keep = false
+				break
+			}
+		}
+		if keep {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
 func main() {
 	self, _ := os.Executable()
+	base := filepath.Join(os.Getenv("LOCALAPPDATA"), "UAFix Player")
+	logf(base, "start: %s %q", self, os.Args[1:])
 	var args []string
 	for i := 1; i < len(os.Args); i++ {
 		switch {
 		case os.Args[i] == "--wait" && i+1 < len(os.Args):
 			if pid, err := strconv.Atoi(os.Args[i+1]); err == nil {
 				waitExit(pid)
+				logf(base, "previous version (pid %d) exited", pid)
 			}
 			i++
 		case os.Args[i] == "--replace" && i+1 < len(os.Args):
 			target := os.Args[i+1]
-			if copyFile(self, target) == nil {
+			if err := copyFile(self, target); err == nil {
 				self = target // далі застосунок оновлюватиме саме його
 				refreshIcons()
+				logf(base, "replaced %s", target)
+			} else {
+				logf(base, "replace %s failed: %v", target, err)
 			}
 			i++
 		default:
@@ -150,24 +194,44 @@ func main() {
 	// щойно оновились (поруч лишився попередній .exe) — прибрати його й оновити іконки
 	if err := os.Remove(self + ".old"); err == nil {
 		refreshIcons()
+		logf(base, "removed previous .exe, icons refreshed")
 	}
 
-	base := filepath.Join(os.Getenv("LOCALAPPDATA"), "UAFix Player")
 	dir := filepath.Join(base, "app-"+version)
 	done := filepath.Join(dir, ".complete")
 	if _, err := os.Stat(done); err != nil {
 		os.RemoveAll(dir)
 		if err := extract(dir); err != nil {
+			logf(base, "extract failed: %v", err)
 			os.RemoveAll(dir)
 			return
 		}
 		os.WriteFile(done, []byte(version), 0o644)
+		logf(base, "extracted %s", dir)
 	}
-	cmd := exec.Command(filepath.Join(dir, "uafix-player.exe"), args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "UAFIX_LAUNCHER="+self)
-	if err := cmd.Start(); err != nil {
-		return
+	appExe := filepath.Join(dir, "uafix-player.exe")
+	env := append(cleanEnv(), "UAFIX_LAUNCHER="+self)
+	for attempt := 1; attempt <= 2; attempt++ {
+		cmd := exec.Command(appExe, args...)
+		cmd.Dir = dir
+		cmd.Env = env
+		if err := cmd.Start(); err != nil {
+			logf(base, "start failed: %v", err)
+			return
+		}
+		logf(base, "started app pid %d (attempt %d)", cmd.Process.Pid, attempt)
+		// стежимо кілька секунд: якщо застосунок одразу закрився — ще одна спроба
+		exited := make(chan error, 1)
+		go func() { exited <- cmd.Wait() }()
+		select {
+		case err := <-exited:
+			logf(base, "app exited right away: %v", err)
+			time.Sleep(2 * time.Second)
+			continue
+		case <-time.After(8 * time.Second):
+			logf(base, "app is running")
+		}
+		break
 	}
 	// старі версії (якщо котрась ще відкрита — видалиться наступного разу)
 	if entries, err := os.ReadDir(base); err == nil {

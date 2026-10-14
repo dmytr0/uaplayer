@@ -223,16 +223,36 @@ def _start_launcher(exe, *args):
     дочірнім процесом, як це робить Orange Audio Lab: він живе далі, коли ми закриємось.
     Спершу — з виходом із «завдання» Windows (якщо нас запустили в такому, що закриває
     дочірні процеси разом із батьківським), а якщо це заборонено — без нього."""
+    import os
     import subprocess
+    # чисте середовище: без шляхів вбудованого Python / Flet ЦІЄЇ версії (інакше нова
+    # версія стартувала з ними й не запускалась — див. також cleanEnv у запускачі)
+    drop = ("PYTHON", "FLET_", "SERIOUS_", "UAFIX_", "SSL_CERT", "REQUESTS_CA",
+            "TCL_LIBRARY", "TK_LIBRARY")
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith(drop)}
     for flags in (0x00000200 | 0x01000000, 0x00000200):  # NEW_PROCESS_GROUP [| BREAKAWAY]
         try:
-            subprocess.Popen([exe, *args], creationflags=flags, close_fds=True,
-                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL)
+            proc = subprocess.Popen([exe, *args], creationflags=flags, close_fds=True, env=env,
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+            _win_log(f"started {exe} {list(args)} pid {proc.pid} (flags {flags:#x})")
             return
-        except OSError:
-            continue
+        except OSError as ex:
+            _win_log(f"start {exe} failed (flags {flags:#x}): {ex}")
     raise RuntimeError("не вдалося запустити нову версію")
+
+
+def _win_log(line):
+    """Windows: рядок у %LOCALAPPDATA%\\UAFix Player\\launcher.log (там же пише й запускач)."""
+    import os
+    import time
+    try:
+        base = os.path.join(os.environ.get("LOCALAPPDATA", ""), "UAFix Player")
+        os.makedirs(base, exist_ok=True)
+        with open(os.path.join(base, "launcher.log"), "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [app {VERSION}] {line}\n")
+    except Exception:
+        pass
 
 
 def relaunch_desktop(platform_name):
@@ -331,7 +351,9 @@ rm -rf "{work}"
             raise
         with open(log, "a", encoding="utf-8") as f:
             f.write(f"{time.strftime('%c')} replaced {launcher}, starting it\n")
-        _start_launcher(launcher)
+        _win_log(f"update: replaced {launcher}")
+        # новий запускач дочекається, поки ця версія закриється, і відкриє нову
+        _start_launcher(launcher, "--wait", str(pid))
         return
     else:
         target = target or desktop_target(platform_name)
