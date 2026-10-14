@@ -128,6 +128,22 @@ jobs:
           python tools/android_template.py android_template
           echo 'APK_ARGS=--template android_template/build --split-per-abi --arch arm64-v8a armeabi-v7a' >> "$GITHUB_ENV"
 
+      # NDK — заздалегідь і з повторами: Gradle сам качає його посеред збірки, і архів
+      # кілька разів приходив пошкодженим («Archive is not a ZIP archive») — збірка падала
+      - name: Android NDK
+        if: matrix.target == 'apk'
+        shell: bash
+        run: |
+          NDK=28.2.13676358
+          SDK=/usr/local/lib/android/sdk
+          for attempt in 1 2 3 4; do
+            [ -f "$SDK/ndk/$NDK/source.properties" ] && exit 0
+            rm -rf "$SDK/ndk/$NDK" "$SDK/.temp"
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" "ndk;$NDK" > /dev/null || true
+            sleep 5
+          done
+          [ -f "$SDK/ndk/$NDK/source.properties" ]
+
       # друга спроба — на випадок мережевого збою (бувало: пошкоджений завантажений архів Python)
       # обмеження часу: зазвичай збірка йде ~10 хв, а зависла (бувало з Android) інакше
       # висить годинами — краще швидко впасти й перезапустити
@@ -139,6 +155,10 @@ jobs:
             flet build ${{ matrix.target }} --yes --verbose --no-rich-output --build-number ${{ github.run_number }} --build-version ${{ env.APP_VERSION }} ${{ env.TV_ARGS }} ${{ env.APK_ARGS }} && exit 0
             echo "::warning::flet build failed (attempt $attempt), retrying"
             rm -rf build/flutter/build
+            # недокачаний NDK лишається на диску й ламає і другу спробу — прибрати
+            for d in /usr/local/lib/android/sdk/ndk/*; do
+              [ -d "$d" ] && [ ! -f "$d/source.properties" ] && rm -rf "$d"
+            done
           done
           exit 1
 
