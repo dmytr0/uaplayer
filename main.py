@@ -24,6 +24,7 @@ import cast as uafix_cast
 import core
 import feedback
 import sync
+import screen
 import tmdb
 import ui
 import updater
@@ -4250,6 +4251,10 @@ def main(page: ft.Page, reopen=None):
             st["fullscreen"] = on
             if not on:
                 st["fullscreen_exit"] = time.monotonic()
+            w = page.window
+            if on and not w.full_screen:
+                # розмір вікна до повного екрана — до нього повертається міні-плеєр
+                st["pre_fs"] = dict(width=w.width, height=w.height, left=w.left, top=w.top)
             page.window.full_screen = on
             fs_btn.icon = ft.Icons.FULLSCREEN_EXIT_ROUNDED if on else ft.Icons.FULLSCREEN_ROUNDED
             fs_btn.tooltip = "Вийти з повного екрана" if on else "На весь екран"
@@ -4824,16 +4829,22 @@ def main(page: ft.Page, reopen=None):
         mini_btn = ft.IconButton(
             ft.Icons.PICTURE_IN_PICTURE_ALT_ROUNDED, icon_color="#FFFFFF", icon_size=20,
             tooltip="Міні-плеєр", visible=is_desktop,
-            on_click=lambda e: p["toggle_mini"]() if p.get("toggle_mini") else None)
+            on_click=lambda e: page.run_task(p["toggle_mini"]) if p.get("toggle_mini") else None)
+        player_win_btns = win_buttons(on_dark=True)  # Windows: у мініатюрі ховаємо
+        peek_btn = ft.IconButton(ft.Icons.LAST_PAGE_ROUNDED, icon_color="#FFFFFF", icon_size=20,
+                                 tooltip="Сховати за край екрана", visible=False)
         bar = drag_area(ft.Container(
             ft.Row([
-                round_button(ft.Icons.ARROW_BACK_IOS_NEW_ROUNDED, lambda e: go_back(), "Назад",
-                             on_dark=True),
+                back_btn := round_button(
+                    ft.Icons.ARROW_BACK_IOS_NEW_ROUNDED,
+                    lambda e: page.run_task(p["close_mini"]) if p.get("mini_on") else go_back(),
+                    "Назад", on_dark=True),
                 ft.Column([ft.Text(show, size=15, weight=ft.FontWeight.W_700, color="#FFFFFF",
                                    max_lines=1, overflow=ft.TextOverflow.ELLIPSIS), now],
                           spacing=0, expand=True),
+                peek_btn,
                 mini_btn,
-                *win_buttons(on_dark=True),
+                *player_win_btns,
             ], spacing=10),
             padding=ft.Padding.only(left=14 + traffic_gap, right=8 if is_win else 14, top=8,
                                     bottom=8),
@@ -4953,32 +4964,224 @@ def main(page: ft.Page, reopen=None):
         #    повторне натискання (чи вихід із плеєра) — назад до попереднього розміру й місця
         mini = {"on": False, "saved": None}
 
-        def toggle_mini():
+        def bars_aspect(raw):
+            """Співвідношення сторін картинки без чорних смуг зверху й знизу з сирого кадру
+            BGRA (ширина невідома — підбираємо типову, з якою кадр ділиться націло)."""
+            n = len(raw)
+            for fw in (3840, 2560, 1920, 1600, 1280, 1024, 960, 854, 848, 720, 640):
+                if n % (fw * 4) == 0 and 1.2 < fw / (n // (fw * 4)) < 2.8:
+                    break
+            else:
+                return None
+            fh = n // (fw * 4)
+            xs = range(fw // 20, fw - fw // 20, fw // 20)
+
+            def lit(y):
+                o = y * fw * 4
+                return max(max(raw[o + x * 4], raw[o + x * 4 + 1], raw[o + x * 4 + 2])
+                           for x in xs) > 28
+
+            top = next((y for y in range(fh) if lit(y)), None)
+            if top is None:
+                return None  # чорний кадр (заставка) — нічого не скажеш
+            bottom = next(y for y in range(fh - 1, -1, -1) if lit(y))
+            if abs(top - (fh - 1 - bottom)) > fh * 0.04:
+                return fw / fh  # смуги несиметричні — це не смуги, а темна сцена
+            return fw / (bottom - top + 1)
+
+        async def video_aspect():
+            """Справжнє співвідношення картинки (фільми часто закодовано в кадр 16:9 з чорними
+            смугами) — з одного знімка кадру; для того самого відео запам'ятовується."""
+            if p.get("aspect_for") and p["aspect_for"][0] == p["idx"]:
+                return p["aspect_for"][1]
+            try:
+                raw = await video.take_screenshot(format=None)
+            except Exception:
+                raw = None
+            a = await asyncio.to_thread(bars_aspect, raw) if raw else None
+            if a and 1.3 < a < 2.7:
+                p["aspect_for"] = (p["idx"], a)
+                return a
+            return None
+
+        async def fit_mini_to_picture():
+            """Мініатюра вже на екрані (16:9, зі смугами) — плавно прибрати чорні смуги:
+            верхній і нижній краї вікна сходяться до картинки, а вона сама стоїть на місці
+            (тому нерівний темп кадрів не помітний)."""
+            a = await video_aspect()
+            w = page.window
+            if not a or not mini["on"] or mini.get("peek"):
+                return
+            h0, t0 = w.height or 0, w.top or 0
+            mh = int((w.width or 480) / a)
+            if abs(mh - h0) <= 3:
+                return
+            steps = 18
+            for i in range(1, steps + 1):
+                x = i / steps
+                k = 3 * x * x - 2 * x ** 3  # плавно розганяється й гальмує
+                h = h0 + (mh - h0) * k
+                w.height, w.top = h, t0 + (h0 - h) / 2
+                page.update()
+                await asyncio.sleep(0.018)
+
+        # у мініатюрі вікно тягнеться за будь-яке місце відео (крім нижньої панелі кнопок).
+        # Шар ще й забирає прокрутку: переміщення трьома пальцями на тачпаді macOS частково
+        # приходить як прокрутка, а над відео вона змінювала гучність
+        mini_drag = ft.WindowDragArea(
+            ft.Container(bgcolor=ft.Colors.with_opacity(0.01, "#000000"),
+                         on_hover=lambda e: on_move(e)),
+            maximizable=False, left=0, top=0, right=0, bottom=64, visible=False)
+
+        # міні-плеєр можна сховати за правий край екрана — видно лише смужку; клік по ній
+        # повертає на попереднє місце
+        PEEK = 28
+        STRIP_BG = ft.Colors.with_opacity(0.55, "#000000")
+
+        async def morph_frame(left, top, width, height):
+            """Перехід вікна в нове положення й розмір без «тряски»: покадрова зміна розміру
+            через Flet смикається (кожен кадр — перебудова відео), тож вікно м'яко
+            зникає, миттєво стає новим, а вміст проявляється з легким наближенням."""
+            w = page.window
+            # масштаб і його анімація задані плеєру від створення: якщо додати їх лише тут,
+            # Flet обгортає плеєр новим віджетом і відео перезапускається
+            player_stack.scale = 0.92
+            for o in (0.75, 0.45, 0.15, 0.0):
+                w.opacity = o
+                page.update()
+                await asyncio.sleep(0.016)
+            w.left, w.top, w.width, w.height = left, top, width, height
+            page.update()
+            await asyncio.sleep(0.05)  # дати вікну стати новим, поки воно прозоре
+            player_stack.scale = 1
+            page.update()
+            for o in (0.3, 0.6, 0.85, 1.0):
+                w.opacity = o
+                page.update()
+                await asyncio.sleep(0.02)
+
+        async def slide(to_left, ms, ease_in):
+            """Плавно пересунути вікно по горизонталі (кадри ~60 Гц)."""
+            w = page.window
+            start = w.left or 0
+            steps = max(1, ms // 16)
+            for i in range(1, steps + 1):
+                t = i / steps
+                k = t ** 3 if ease_in else 1 - (1 - t) ** 3
+                w.left = start + (to_left - start) * k
+                page.update()
+                await asyncio.sleep(0.016)
+
+        async def set_peek(on):
+            w = page.window
+            if mini.get("peek_busy"):
+                return
+            mini["peek_busy"] = True
+            try:
+                if on and not mini.get("peek"):
+                    ax, ay, aw, ah = mini.get("area") or (0, 0, (w.left or 0) + (w.width or 0), 0)
+                    edge = ax + aw - PEEK
+                    mini["peek"] = (w.left, w.top)
+                    peek_btn.visible = False
+                    bar_box.opacity = 0
+                    peek_cover.visible = True
+                    page.update()
+                    await slide(edge, 260, ease_in=True)  # з розгону — у край
+                    # дотик: смужка спалахує, вікно ледь відскакує й «прилипає»
+                    strip.bgcolor = ACCENT
+                    page.update()
+                    await slide(edge - 14, 90, ease_in=False)
+                    await slide(edge, 140, ease_in=True)
+                    await asyncio.sleep(0.15)
+                    strip.bgcolor = STRIP_BG
+                    page.update()
+                elif not on and mini.get("peek"):
+                    left, top = mini.pop("peek")
+                    await slide(left, 300, ease_in=False)  # виїжджає й плавно гальмує
+                    peek_cover.visible = False
+                    peek_btn.visible = mini["on"]
+                    page.update()
+            finally:
+                mini["peek_busy"] = False
+
+        def drop_peek():
+            """Розгортання з мініатюри: просто забути «сховане» положення."""
+            mini.pop("peek", None)
+            peek_cover.visible = False
+            peek_btn.visible = False
+            strip.bgcolor = STRIP_BG
+
+        strip = ft.Container(ft.Icon(ft.Icons.CHEVRON_LEFT_ROUNDED, color="#FFFFFF", size=22),
+                             width=PEEK, alignment=ft.Alignment.CENTER, bgcolor=STRIP_BG,
+                             animate=ft.Animation(220, ft.AnimationCurve.EASE_OUT))
+        peek_cover = ft.Container(
+            strip, left=0, top=0, right=0, bottom=0, alignment=ft.Alignment.CENTER_LEFT,
+            visible=False, tooltip="Повернути міні-плеєр",
+            on_click=lambda e: page.run_task(set_peek, False))
+        peek_btn.on_click = lambda e: page.run_task(set_peek, True)
+
+        async def toggle_mini(restore_fs=True, animate=True):
             w = page.window
             if not mini["on"]:
+                was_fs = bool(w.full_screen)
                 mini["saved"] = dict(width=w.width, height=w.height, left=w.left, top=w.top,
                                      min_width=w.min_width, min_height=w.min_height,
-                                     maximized=w.maximized, full_screen=w.full_screen)
-                mw, mh = 480, 270
-                if w.full_screen:
+                                     maximized=w.maximized, full_screen=was_fs)
+                screen_box = dict(mini["saved"])  # де шукати монітор
+                if was_fs and st.get("pre_fs"):
+                    # з повного екрана: «звичайний» розмір — той, що був до нього (інакше після
+                    # повернення й виходу з повного екрана вікно лишалось на весь екран)
+                    mini["saved"].update(st["pre_fs"])
+                mini["on"] = p["mini_on"] = True
+                peek_btn.visible = True
+                mini_drag.visible = True
+                back_btn.icon, back_btn.tooltip = ft.Icons.CLOSE_ROUNDED, "Закрити"
+                mini_btn.icon, mini_btn.tooltip = ft.Icons.OPEN_IN_FULL_ROUNDED, "Розгорнути"
+                if was_fs:
+                    # вихід із повного екрана на Mac — анімація ~0,7 с; розмір, заданий під
+                    # час неї, macOS перебиває, і мініатюра лишалась на весь екран
                     w.full_screen = False
+                    page.update()
+                    await asyncio.sleep(1.0)
                 if w.maximized:
                     w.maximized = False
-                if w.left is not None and w.top is not None and w.width and w.height:
-                    w.left = w.left + w.width - mw - 24
-                    w.top = w.top + w.height - mh - 24
-                w.min_width, w.min_height = 320, 180
-                w.width, w.height = mw, mh
+                # чверть екрана (пів ширини, 16:9) у правому нижньому куті робочої області
+                # монітора (без рядка меню, Dock і панелі завдань)
+                sv = screen_box
+                cx = (sv["left"] or 0) + (sv["width"] or 0) / 2
+                cy = (sv["top"] or 0) + (sv["height"] or 0) / 2
+                area = await asyncio.to_thread(screen.work_area, cx, cy) or \
+                    (sv["left"] or 0, sv["top"] or 0, sv["width"] or 960, sv["height"] or 540)
+                ax, ay, aw, ah = area
+                # спершу 16:9 зі смугами (масштаб відео не міняємо — це давало ривок), а
+                # смуги плавно прибирає fit_mini_to_picture уже після появи
+                mw = max(480, int(aw / 2))
+                mh = int(mw * 9 / 16)
+                mini["area"] = area
+                w.min_width, w.min_height = 320, 120
                 w.always_on_top = True
+                page.update()
+                await morph_frame(ax + aw - mw - 16, ay + 16, mw, mh)  # угорі праворуч
                 if is_mac:
                     w.title_bar_buttons_hidden = True  # «світлофор» у мініатюрі заважає
-                mini_btn.icon, mini_btn.tooltip = ft.Icons.OPEN_IN_FULL_ROUNDED, "Розгорнути"
-                mini["on"] = True
+                for b in player_win_btns:  # як і кнопки вікна Windows
+                    b.visible = False
+                page.update()
+                page.run_task(fit_mini_to_picture)
             else:
                 sv = mini["saved"] or {}
+                mini["on"] = p["mini_on"] = False
+                mini_drag.visible = False
+                back_btn.icon, back_btn.tooltip = ft.Icons.ARROW_BACK_IOS_NEW_ROUNDED, "Назад"
+                drop_peek()
                 w.always_on_top = False
                 if is_mac:
                     w.title_bar_buttons_hidden = False
+                for b in player_win_btns:
+                    b.visible = True
+                if animate and None not in (sv.get("left"), sv.get("top"), sv.get("width"),
+                                            sv.get("height")):
+                    await morph_frame(sv["left"], sv["top"], sv["width"], sv["height"])
                 for k in ("min_width", "min_height", "width", "height", "left", "top"):
                     if sv.get(k) is not None:
                         setattr(w, k, sv[k])
@@ -4986,15 +5189,48 @@ def main(page: ft.Page, reopen=None):
                     w.maximized = True
                 mini_btn.icon, mini_btn.tooltip = ft.Icons.PICTURE_IN_PICTURE_ALT_ROUNDED, \
                     "Міні-плеєр"
-                mini["on"] = False
+                if sv.get("full_screen") and restore_fs:
+                    page.update()
+                    await asyncio.sleep(0.3)
+                    w.full_screen = True  # був повний екран — туди й повертаємось
             page.update()
 
         p["toggle_mini"] = toggle_mini
+
+        async def close_mini():
+            """Закрити мініатюру: вікно одразу стає прозорим (розгортання не видно), плеєр
+            закривається, а застосунок у звичайному розмірі згортається в Dock / панель
+            завдань. Ховати вікно (visible=False) не можна: на Mac це закриває застосунок."""
+            w = page.window
+            w.opacity = 0
+            page.update()
+            await asyncio.sleep(0.15)
+            await toggle_mini(False, animate=False)  # повернути розмір, поки вікно прозоре
+            st["mini_restore"] = None
+            go_back()
+            for _ in range(50):  # дочекатись, поки плеєр збереже прогрес і закриється
+                if not (page.views and page.views[-1].route == "/play"):
+                    break
+                await asyncio.sleep(0.1)
+            # macOS запам'ятовує вигляд вікна в момент згортання і показує його при
+            # розгортанні — спершу дати домалювати сторінку фільму (вікно ще прозоре)
+            page.update()
+            await asyncio.sleep(0.9)
+            w.minimized = True
+            page.update()
+            await asyncio.sleep(0.6)  # уже в Dock — повернути непрозорість
+            w.opacity = 1
+            page.update()
+
+        p["close_mini"] = close_mini
         # вихід із плеєра в міні-режимі — спершу повернути вікно
-        st["mini_restore"] = lambda: toggle_mini() if mini["on"] else None
+        # (без повернення в повний екран — плеєр закривається, звідти виходимо й так)
+        st["mini_restore"] = lambda: page.run_task(toggle_mini, False) if mini["on"] else None
         page.run_task(hide_bar_later, 0)
         return ft.GestureDetector(
-            ft.Stack([video, bar_box, hud, next_card], expand=True),
+            player_stack := ft.Stack(
+                [video, mini_drag, bar_box, hud, next_card, peek_cover], expand=True, scale=1,
+                animate_scale=ft.Animation(260, ft.AnimationCurve.EASE_OUT_CUBIC)),
             on_hover=on_move, expand=True)
 
     async def save_m3u(ctx):
