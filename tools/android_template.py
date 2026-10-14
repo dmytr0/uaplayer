@@ -27,6 +27,10 @@ MAIN_ACTIVITY = '''package {{ cookiecutter.org_name_2 }}.{{ cookiecutter.package
 
 import android.app.AlarmManager
 import android.app.PendingIntent
+import android.app.PictureInPictureParams
+import android.content.pm.PackageManager
+import android.util.Rational
+import androidx.annotation.RequiresApi
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -40,6 +44,9 @@ import java.io.File
 
 class MainActivity : FlutterFragmentActivity() {
     private var multicastLock: WifiManager.MulticastLock? = null
+    /** «Картинка в картинці»: дозволено, поки відкритий плеєр (вмикає Python-частина
+     *  посиланням uafixupdate://pip?on=1 / on=0). */
+    private var pipAllowed = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -64,6 +71,36 @@ class MainActivity : FlutterFragmentActivity() {
     override fun onResume() {
         super.onResume()
         requestHighRefreshRate()
+    }
+
+    /** Вихід на домашній екран під час перегляду — відео в плаваюче вікно. */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (pipAllowed && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                enterPictureInPictureMode(pipParams())
+            } catch (e: Exception) {
+            }
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.O)
+    private fun pipParams(): PictureInPictureParams {
+        val b = PictureInPictureParams.Builder().setAspectRatio(Rational(16, 9))
+        // Android 12+: плавний перехід у плаваюче вікно жестом «додому»
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) b.setAutoEnterEnabled(pipAllowed)
+        return b.build()
+    }
+
+    private fun setPip(on: Boolean) {
+        pipAllowed = on && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                setPictureInPictureParams(pipParams())
+            } catch (e: Exception) {
+            }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -113,6 +150,10 @@ class MainActivity : FlutterFragmentActivity() {
             restartApp()
             return true
         }
+        if (data.host == "pip") {  // плеєр відкрито / закрито
+            setPip(data.getQueryParameter("on") == "1")
+            return true
+        }
         // update.apk кладе Python-частина в кеш (запасні варіанти — дані застосунку)
         val apk = listOf(cacheDir, filesDir)
             .map { File(it, "update.apk") }.firstOrNull { it.isFile } ?: return true
@@ -149,6 +190,10 @@ INSTALL_INTENT_FILTER = '''
                 <data android:scheme="uafixupdate" />
             </intent-filter>'''
 LAUNCHER_FILTER_END = "<!-- Google TV -->\n            </intent-filter>"
+# «картинка в картинці» (плаваюче вікно з відео при виході з застосунку)
+ACTIVITY_NAME_ATTR = 'android:name=".MainActivity"'
+PIP_ATTRS = ('android:supportsPictureInPicture="true"\n'
+             '            android:resizeableActivity="true"')
 # банер для лаунчера Android TV (без нього там лише сірий прямокутник із назвою)
 APP_ICON_ATTR = 'android:icon="@mipmap/ic_launcher">'
 BANNER = Path(__file__).with_name("tv_banner.png")
@@ -173,6 +218,10 @@ def main(out_dir: str) -> None:
     if LAUNCHER_FILTER_END not in manifest:
         sys.exit("Не знайдено intent-filter лаунчера в AndroidManifest.xml — шаблон змінився")
     manifest = manifest.replace(LAUNCHER_FILTER_END, LAUNCHER_FILTER_END + INSTALL_INTENT_FILTER, 1)
+    if ACTIVITY_NAME_ATTR not in manifest:
+        sys.exit("Не знайдено MainActivity в AndroidManifest.xml — шаблон змінився")
+    manifest = manifest.replace(ACTIVITY_NAME_ATTR,
+                                ACTIVITY_NAME_ATTR + "\n            " + PIP_ATTRS, 1)
     if APP_ICON_ATTR not in manifest:
         sys.exit("Не знайдено android:icon у <application> — шаблон змінився")
     manifest = manifest.replace(

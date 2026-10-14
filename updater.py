@@ -164,18 +164,25 @@ def mark_started():
 
 
 def _mac_relaunch(app, marker, log):
-    """Фрагмент sh: відкрити застосунок; якщо за 25 с він не відзвітував про старт
-    (позначка) — закрити й відкрити ще раз."""
+    """Фрагмент sh: відкрити застосунок і дочекатися, поки він відзвітує про старт (позначка).
+    Перший запуск щойно заміненого застосунку може тривати довго — macOS перевіряє всі нові
+    файли (сотні бібліотек вбудованого Python). Тому чекаємо до 3 хв і НЕ вбиваємо його:
+    раніше скрипт через 25 с закривав і відкривав знову, перевірка починалась наново,
+    і вікно так і висіло. Повторно відкриваємо лише якщо процес сам закрився без старту."""
     return f'''
 rm -f "{marker}"
 open "{app}"
 i=0
-while [ $i -lt 50 ] && [ ! -f "{marker}" ]; do sleep 0.5; i=$((i+1)); done
-if [ ! -f "{marker}" ]; then
-  echo "$(date) no start marker, relaunching" >> "{log}"
-  pkill -f "{app}/Contents/MacOS/" ; sleep 2
-  open "{app}"
-fi'''
+while [ $i -lt 360 ] && [ ! -f "{marker}" ]; do
+  sleep 0.5; i=$((i+1))
+  if [ $i -eq 20 ] || [ $i -eq 120 ]; then
+    if ! pgrep -f "{app}/Contents/MacOS/" >/dev/null; then
+      echo "$(date) app exited before start, reopening" >> "{log}"
+      open "{app}"
+    fi
+  fi
+done
+[ -f "{marker}" ] && echo "$(date) started after $((i / 2)) s" >> "{log}" || echo "$(date) no start marker after 3 min" >> "{log}"'''
 
 
 def _win_relaunch(exe, marker, log):

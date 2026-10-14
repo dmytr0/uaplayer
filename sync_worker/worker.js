@@ -9,7 +9,8 @@
 //       POST /v1/sync/<код>   (документ пристрою) → злитий документ
 //
 // Документ: {history: [...], favorites: [...], history_cleared: ts}
-//   history:   {url, title, orig, poster, age, season, label, si, ei, voice, pos, dur, ts}
+//   history:   {url, title, orig, poster, age, season, label, si, ei, voice, pos, dur, ts,
+//               seen?: {"сезон:серія": частка переглянутого}}
 //   favorites: {url, title, orig, poster, age, ts, removed?}
 
 const CODE_RE = /^[A-HJ-NP-Z2-9]{12}$/;   // без схожих I/O/0/1
@@ -49,7 +50,22 @@ function cleanHistory(h) {
     pos: num(h.pos), dur: num(h.dur), ts: num(h.ts),
   };
   if (h.removed) out.removed = true;  // прибрано з «Продовжити перегляд» на одному з пристроїв
+  const seen = cleanSeen(h.seen);
+  if (seen) out.seen = seen;
   return out;
+}
+
+// скільки переглянуто кожної серії: {"сезон:серія": частка 0..1}, не більше 150 записів
+function cleanSeen(s) {
+  if (!s || typeof s !== "object" || Array.isArray(s)) return null;
+  const out = {};
+  let n = 0;
+  for (const [k, v] of Object.entries(s)) {
+    if (!/^\d{1,3}:\d{1,4}$/.test(k) || typeof v !== "number" || !Number.isFinite(v)) continue;
+    out[k] = Math.max(0, Math.min(1, Math.round(v * 1000) / 1000));
+    if (++n >= 150) break;
+  }
+  return n ? out : null;
 }
 
 function cleanFavorite(f) {
