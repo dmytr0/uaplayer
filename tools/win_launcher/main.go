@@ -5,10 +5,9 @@
 // Шлях до самого запускача передається застосунку в UAFIX_LAUNCHER — за ним оновлення
 // в застосунку кладе новий .exe на місце старого.
 //
-// Оновлення й перезапуск — без скриптів і вікон консолі:
-//   новий.exe --wait <pid> --replace <шлях до старого .exe>
-// чекає, поки застосунок закриється, копіює себе на місце старого .exe і запускає нову версію;
-//   UAFix-Player-Windows.exe --wait <pid> — просто перезапуск (зміна теми).
+// Оновлення (як в Orange Audio Lab): застосунок перейменовує цей .exe на .old, кладе новий
+// на його місце й запускає; новий розпаковує свою версію, відкриває її і прибирає .old.
+// Прапорці --wait <pid> / --replace <шлях> лишились для сумісності.
 package main
 
 import (
@@ -141,13 +140,17 @@ func main() {
 			target := os.Args[i+1]
 			if copyFile(self, target) == nil {
 				self = target // далі застосунок оновлюватиме саме його
+				refreshIcons()
 			}
 			i++
 		default:
 			args = append(args, os.Args[i])
 		}
 	}
-	os.Remove(self + ".old")
+	// щойно оновились (поруч лишився попередній .exe) — прибрати його й оновити іконки
+	if err := os.Remove(self + ".old"); err == nil {
+		refreshIcons()
+	}
 
 	base := filepath.Join(os.Getenv("LOCALAPPDATA"), "UAFix Player")
 	dir := filepath.Join(base, "app-"+version)

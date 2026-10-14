@@ -219,12 +219,20 @@ def _spawn(platform_name, script):
 
 
 def _start_launcher(exe, *args):
-    """Windows: запустити портативний .exe (він вікно консолі не відкриває) окремо від нас."""
+    """Windows: запустити портативний .exe (вікна консолі він не відкриває) — звичайним
+    дочірнім процесом, як це робить Orange Audio Lab: він живе далі, коли ми закриємось.
+    Спершу — з виходом із «завдання» Windows (якщо нас запустили в такому, що закриває
+    дочірні процеси разом із батьківським), а якщо це заборонено — без нього."""
     import subprocess
-    flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-    subprocess.Popen([exe, *args], creationflags=flags, close_fds=True,
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL)
+    for flags in (0x00000200 | 0x01000000, 0x00000200):  # NEW_PROCESS_GROUP [| BREAKAWAY]
+        try:
+            subprocess.Popen([exe, *args], creationflags=flags, close_fds=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+            return
+        except OSError:
+            continue
+    raise RuntimeError("не вдалося запустити нову версію")
 
 
 def relaunch_desktop(platform_name):
@@ -272,6 +280,7 @@ def install_desktop(pkg_path, platform_name, target=None, relaunch=True):
     import os
     import subprocess
     import tempfile
+    import time
     work = tempfile.mkdtemp(prefix="uafix-update-")
     pid, marker = os.getpid(), started_marker()
     log = os.path.join(_data_dir(), ".uafix_update.log")
@@ -301,12 +310,28 @@ echo "$(date) done" >> "{log}"
 rm -rf "{work}"
 ''')
     elif pkg_path.lower().endswith(".exe"):
-        # портативний .exe: новий сам дочекається, поки ми закриємось, стане на місце старого
-        # (там, де його тримає людина) і запуститься — без скриптів і вікон консолі
+        # портативний .exe — як в Orange Audio Lab: старий .exe перейменовуємо на .old (не
+        # заважає), новий кладемо на його місце (там, де його тримає людина) і одразу
+        # запускаємо; він розпакує нову версію у свою теку й відкриє її, а ми закриваємось.
+        # .old запускач прибере сам при наступному старті.
+        import shutil
         launcher = os.environ.get("UAFIX_LAUNCHER")
         if not launcher:
             raise RuntimeError("не знайдено портативний .exe застосунку")
-        _start_launcher(pkg_path, "--wait", str(pid), "--replace", launcher)
+        old = launcher + ".old"
+        try:
+            os.remove(old)
+        except OSError:
+            pass
+        os.replace(launcher, old)
+        try:
+            shutil.copyfile(pkg_path, launcher)
+        except Exception:
+            os.replace(old, launcher)
+            raise
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%c')} replaced {launcher}, starting it\n")
+        _start_launcher(launcher)
         return
     else:
         target = target or desktop_target(platform_name)
