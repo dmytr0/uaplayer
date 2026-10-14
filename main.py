@@ -24,6 +24,7 @@ import cast as uafix_cast
 import core
 import feedback
 import sync
+import tmdb
 import ui
 import updater
 from ui import ACCENT, BG, BORDER, MUTED, SURFACE, SURFACE_2, SURFACE_3, TEXT
@@ -1462,6 +1463,43 @@ def main(page: ft.Page, reopen=None):
     ))
 
     # ═════════════════════ картки ═════════════════════
+    tmdb_slots = asyncio.Semaphore(4)  # не більше 4 пошуків у TMDB одночасно
+
+    def tmdb_swap(box, item, size="w780"):
+        """Картинка тайтлу з TMDB (офіційний широкий кадр) замість картинки сайту.
+        Знайдена раніше — одразу. Інакше картинку сайту не показуємо зовсім (лише фон-
+        заглушка), поки не прийде відповідь: так на очах нічого не підміняється. Не знайшли
+        або TMDB не відповів за 4 с — показуємо картинку сайту."""
+        img = box if isinstance(box, ft.Image) else getattr(box, "content", None)
+        if not tmdb.enabled() or not isinstance(img, ft.Image) or not item.get("url"):
+            return box
+        known, src = tmdb.cached(item["url"], size)
+        if known:
+            if src:
+                img.src = src
+            return box
+        img.visible = False  # невидима — Flutter її не будує й не вантажить
+
+        async def look():
+            src = None
+            try:
+                async with tmdb_slots:
+                    src = await asyncio.wait_for(asyncio.to_thread(
+                        tmdb.backdrop, item["url"], item.get("title", ""), item.get("orig", ""),
+                        item.get("year", ""), size), 4)
+            except Exception:
+                pass
+            if src:
+                img.src = src
+            img.visible = True
+            try:
+                img.update()
+            except Exception:
+                pass  # картку ще не показано (усе вже виставлено) або вже прибрано
+
+        page.run_task(look)
+        return box
+
     def grid_card(item, progress=None, caption=None, on_open=None, on_remove=None, tv_w=None):
         play = ft.Container(
             ft.Icon(ft.Icons.PLAY_ARROW_ROUNDED, color="#FFFFFF", size=30),
@@ -1471,7 +1509,8 @@ def main(page: ft.Page, reopen=None):
             shadow=ft.BoxShadow(blur_radius=24, color=ft.Colors.with_opacity(0.5, ACCENT)),
         )
         layers = [
-            ui.poster_image(item["poster"], cache_width=480 if TV else 760, left=0, top=0, right=0, bottom=0),
+            tmdb_swap(ui.poster_image(item["poster"], cache_width=480 if TV else 760,
+                                      left=0, top=0, right=0, bottom=0), item),
             ft.Container(  # затемнення знизу під назвою
                 left=0, right=0, bottom=0, height=110,
                 gradient=ft.LinearGradient(
@@ -1579,7 +1618,8 @@ def main(page: ft.Page, reopen=None):
                         offset=ft.Offset(0, 0), animate_offset=ui.FAST)
         row = ft.Container(
             ft.Row([
-                ui.poster_image(item["poster"], radius=10, width=176, height=99, cache_width=360),
+                tmdb_swap(ui.poster_image(item["poster"], radius=10, width=176, height=99,
+                                          cache_width=360), item, "w300"),
                 ft.Column(lines, spacing=4, expand=True, alignment=ft.MainAxisAlignment.CENTER),
                 arrow,
             ], spacing=16),
@@ -1897,7 +1937,8 @@ def main(page: ft.Page, reopen=None):
     def slide_image(item):
         # «Ken Burns»: кадр повільно наближається, поки слайд на екрані
         return ft.Container(
-            ft.Image(src=item["poster"], fit=ft.BoxFit.COVER, gapless_playback=True,
+            ft.Image(src=item.get("backdrop") or item["poster"], fit=ft.BoxFit.COVER,
+                     gapless_playback=True,
                      width=float("inf"), height=float("inf")),
             expand=True, scale=1.0,
             animate_scale=ft.Animation(BANNER_INTERVAL * 1000 + 1500, ft.AnimationCurve.LINEAR),
@@ -2900,10 +2941,13 @@ def main(page: ft.Page, reopen=None):
                     else "Відкриє форму на GitHub з даними про версію й пристрій",
                     on_click=lambda e: open_feedback() if feedback.enabled()
                     else open_link(issue_url())),
+                row(ft.Icons.IMAGE_OUTLINED, "Кадри фільмів — TMDB",
+                    "Цей застосунок використовує API TMDB, але не схвалений і не сертифікований TMDB",
+                    on_click=lambda e: open_link("https://www.themoviedb.org")),
                 row(ft.Icons.RESTART_ALT_ROUNDED, "Скинути налаштування", on_click=reset_settings),
             ])],
         }
-        footer = ft.Text(f"UAFix Player {updater.VERSION} · автор — Roman Minko · вміст — uafix.net",
+        footer = ft.Text(f"UAFix Player {updater.VERSION} · автор — Roman Minko · вміст — uafix.net · кадри — TMDB",
                          size=12, color=MUTED, text_align=ft.TextAlign.CENTER)
         if group:
             sections = groups[group]() + [footer]
@@ -2963,7 +3007,8 @@ def main(page: ft.Page, reopen=None):
             return ft.Image(src=src, fit=ft.BoxFit.COVER, opacity=0.45, cache_width=36,
                             filter_quality=ft.FilterQuality.HIGH, gapless_playback=True)
 
-        backdrop = ft.Container(backdrop_image(item["poster"]), left=0, top=0, right=0, height=640,
+        backdrop = ft.Container(tmdb_swap(backdrop_image(item["poster"]), item, "w300"),
+                                left=0, top=0, right=0, height=640,
                                 clip_behavior=ft.ClipBehavior.HARD_EDGE)
         backdrop_fade = ft.Container(
             left=0, top=0, right=0, height=640,
@@ -2974,7 +3019,8 @@ def main(page: ft.Page, reopen=None):
         )
 
         poster = ft.Container(
-            ui.poster_image(item["poster"], radius=18, aspect_ratio=POSTER_RATIO),
+            tmdb_swap(ui.poster_image(item["poster"], radius=18, aspect_ratio=POSTER_RATIO),
+                      item, "w1280"),
             border_radius=18,
             shadow=ft.BoxShadow(blur_radius=50, offset=ft.Offset(0, 24),
                                 color=ft.Colors.with_opacity(0.6, "#000000")),
@@ -3227,8 +3273,11 @@ def main(page: ft.Page, reopen=None):
             return
         ctx["info"] = info
         if info["poster"] and info["poster"] != item["poster"]:
-            poster.content = ui.poster_image(info["poster"], radius=18, aspect_ratio=POSTER_RATIO)
-            backdrop.content = backdrop_image(info["poster"])
+            poster.content = tmdb_swap(ui.poster_image(info["poster"], radius=18,
+                                                       aspect_ratio=POSTER_RATIO),
+                                       dict(item, year=info.get("year", "")), "w1280")
+            backdrop.content = tmdb_swap(backdrop_image(info["poster"]),
+                                         dict(item, year=info.get("year", "")), "w300")
         title.value = info["title"] or item["title"]
         if info["orig"]:
             orig.value, orig.visible = info["orig"], True

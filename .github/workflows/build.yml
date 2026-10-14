@@ -78,6 +78,7 @@ jobs:
         env:
           FEEDBACK_BOT_TOKEN: ${{ secrets.FEEDBACK_BOT_TOKEN }}
           FEEDBACK_CHAT_ID: ${{ secrets.FEEDBACK_CHAT_ID }}
+          TMDB_TOKEN: ${{ secrets.TMDB_TOKEN }}  # широкі кадри для банера (tmdb.py)
         run: |
           import os, re
           ref = os.environ.get("GITHUB_REF_NAME", "")
@@ -89,6 +90,7 @@ jobs:
               f.write(f'VERSION = "{version}"\n')
               f.write(f'FEEDBACK_BOT_TOKEN = {os.environ.get("FEEDBACK_BOT_TOKEN", "")!r}\n')
               f.write(f'FEEDBACK_CHAT_ID = {os.environ.get("FEEDBACK_CHAT_ID", "")!r}\n')
+              f.write(f'TMDB_TOKEN = {os.environ.get("TMDB_TOKEN", "")!r}\n')
           with open(os.environ["GITHUB_ENV"], "a") as f:
               f.write(f"APP_VERSION={version}\n")
           print("version:", version)

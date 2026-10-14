@@ -666,7 +666,10 @@ def featured(count=7, workers=7):
             info = parse_title(fetch(item["url"]), item["url"])
         except Exception:
             return dict(item, info=None)
-        return dict(item, info=info)
+        import tmdb  # офіційний широкий кадр замість картинки сайту (800×450, з написами)
+        wide = tmdb.backdrop(item["url"], info.get("title") or item["title"], info.get("orig", ""),
+                             info.get("year", ""))
+        return dict(item, info=info, backdrop=wide)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         return list(pool.map(enrich, mixed))
