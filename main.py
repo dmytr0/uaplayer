@@ -2991,7 +2991,7 @@ def main(page: ft.Page, reopen=None):
             padding=ft.Padding.symmetric(horizontal=18, vertical=18),
         )
         resume_btn = ft.FilledButton(
-            "Продовжити", icon=ft.Icons.REPLAY_ROUNDED, visible=False, style=orange_style(22))
+            "Продовжити", icon=ft.Icons.PLAY_ARROW_ROUNDED, visible=False, style=orange_style(22))
 
         def update_resume():
             """Кнопка «Продовжити · С1 · Серія 3 · 23:14», якщо тайтл уже почали дивитись."""
@@ -3001,7 +3001,10 @@ def main(page: ft.Page, reopen=None):
             # оранжева — головна дія: «Продовжити», якщо вже почали, інакше «Дивитись»
             play_btn.style = white_style(26) if spot is not None else orange_style()
             if not play_btn.disabled:  # поки шукаємо відео — на кнопці «Зачекайте…»
+                # продовжити — ▶ (на оранжевій), дивитись спочатку — кругла стрілка
                 play_btn.content = "Дивитись спочатку" if spot is not None else "Дивитись"
+                play_btn.icon = (ft.Icons.REPLAY_ROUNDED if spot is not None
+                                 else ft.Icons.PLAY_ARROW_ROUNDED)
             if spot:
                 resume_btn.content = f"Продовжити · {resume_caption(h)}"
                 resume_btn.on_click = lambda e: page.run_task(resume_watching)
