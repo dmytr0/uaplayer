@@ -1630,9 +1630,12 @@ def main(page: ft.Page, reopen=None):
     if TV:
         # кнопка-обгортка не розтягує вміст на всю клітинку сітки, тому на телевізорі —
         # картки фіксованого розміру в рядку з переносом, у прокручуваному списку
-        grid = ft.Row(wrap=True, spacing=24, run_spacing=24)
-        tv_grid_scroller = ft.ListView([grid], expand=True, padding=pad, on_scroll=on_scroll,
-                                       scroll_interval=80)
+        # Ряди карток — окремими елементами списку: Flutter будує лише ряди на екрані
+        # (і запас cache_extent), а не всі сотні карток розділу одразу
+        tv_cards = []
+        tv_grid_scroller = grid = ft.ListView(expand=True, spacing=24, padding=pad,
+                                              on_scroll=on_scroll, scroll_interval=80,
+                                              cache_extent=1600)
 
     def skeleton():
         if st["layout"] == "list":
@@ -1673,11 +1676,30 @@ def main(page: ft.Page, reopen=None):
         transition=ft.AnimatedSwitcherTransition.FADE,
         switch_in_curve=ui.EASE, switch_out_curve=ui.EASE, expand=True)
 
+    def tv_grid_cols():
+        return 4 if (page.width or 960) - 56 >= 840 else 3
+
     def tv_grid_card_w():
         """TV: картки сітки на всю ширину екрана — 4 в ряд (на вужчому — 3)."""
         avail = (page.width or 960) - 48 - 8  # відступи сітки й смужки біля країв
-        cols = 4 if avail >= 840 else 3
+        cols = tv_grid_cols()
         return int((avail - 24 * (cols - 1)) / cols) - 1
+
+    def tv_grid_place(cards, append):
+        """TV: розкласти картки по рядах; при дозавантаженні — дозаповнити останній ряд."""
+        cols = tv_grid_cols()
+        if not append:
+            tv_cards.clear()
+            grid.controls = []
+        tv_cards.extend(cards)
+        rows = grid.controls
+        if rows and len(rows[-1].controls) < cols:
+            last = rows[-1]
+            take = cols - len(last.controls)
+            last.controls.extend(cards[:take])
+            cards = cards[take:]
+        for i in range(0, len(cards), cols):
+            rows.append(ft.Row(cards[i:i + cols], spacing=24))
 
     def apply_layout_default():
         """Вигляд розділів із налаштувань (перемикач у розділі змінює його лише до виходу)."""
@@ -1719,7 +1741,9 @@ def main(page: ft.Page, reopen=None):
             for c in cards:
                 ui.reveal(c)
         view = current_view()
-        if append:
+        if TV and st["layout"] == "grid":
+            tv_grid_place(cards, append)
+        elif append:
             view.controls.extend(cards)
         else:
             view.controls = cards
@@ -2355,7 +2379,7 @@ def main(page: ft.Page, reopen=None):
             target = (alive_rows[0].content.controls[0] if alive_rows
                       else tv_first_tile[0] if tv_first_tile else None)
         else:
-            items = current_view().controls
+            items = tv_cards if st["layout"] == "grid" else current_view().controls
             target = items[0] if items else None
         if target is not None:
             page.run_task(focus_later, target)
@@ -4166,6 +4190,27 @@ def main(page: ft.Page, reopen=None):
                                     if core._VARIANTS.get(entries[p["idx"]]["url"]) else None)
             more_slot.content = tv_more_btn
 
+        win_fs = is_desktop and not TV
+
+        def win_fullscreen(on):
+            """ПК: на весь екран розгортається саме вікно. Вбудований повноекранний режим
+            плеєра відкривається поверх усього застосунку й ховає плашку гучності, картку
+            наступної серії та назву."""
+            if on and st.get("mini_restore"):
+                st["mini_restore"]()  # з міні-плеєра — спершу назад до звичайного вікна
+            st["fullscreen"] = on
+            if not on:
+                st["fullscreen_exit"] = time.monotonic()
+            page.window.full_screen = on
+            fs_btn.icon = ft.Icons.FULLSCREEN_EXIT_ROUNDED if on else ft.Icons.FULLSCREEN_ROUNDED
+            fs_btn.tooltip = "Вийти з повного екрана" if on else "На весь екран"
+            page.update()
+
+        fs_btn = bar_button(ft.Icons.FULLSCREEN_ROUNDED, "На весь екран",
+                            lambda e: win_fullscreen(not st.get("fullscreen")))
+        if win_fs:
+            st["win_fullscreen"] = win_fullscreen
+
         style = dict(seek_bar_position_color=ACCENT, seek_bar_thumb_color=ACCENT,
                      automatically_imply_skip_next_button=False,
                      automatically_imply_skip_previous_button=False,
@@ -4173,7 +4218,7 @@ def main(page: ft.Page, reopen=None):
                                         fv.VideoVolumeButton(), fv.VideoPositionIndicator(),
                                         fv.VideoSpacer(), voice_slot, sub_slot, quality_slot, cast_btn,
                                         fit_btn,
-                                        fv.VideoFullscreenButton()])
+                                        fs_btn if win_fs else fv.VideoFullscreenButton()])
         if TV:
             # Телевізор: власна панель поверх відео замість вбудованої. У вбудованої таймлайн
             # не отримує фокус з пульта (перемотувати можна було лише кнопками), а сама панель
@@ -4654,8 +4699,17 @@ def main(page: ft.Page, reopen=None):
                 video.fit = fit_value(on)
                 video.update()
 
-        video.on_enter_fullscreen = lambda e: fullscreen(True)
-        video.on_exit_fullscreen = lambda e: fullscreen(False)
+        def on_enter_fullscreen(e):
+            if win_fs:
+                # подвійний клік по відео: замість вбудованого режиму — на весь екран вікно
+                video.fullscreen = False
+                video.update()
+                win_fullscreen(not st.get("fullscreen"))
+                return
+            fullscreen(True)
+
+        video.on_enter_fullscreen = on_enter_fullscreen
+        video.on_exit_fullscreen = lambda e: None if win_fs else fullscreen(False)
 
         if accel is not None:
             o = {"state": None, "count": 0}
@@ -4957,6 +5011,10 @@ def main(page: ft.Page, reopen=None):
             if st.get("mini_restore"):
                 st["mini_restore"]()
                 st["mini_restore"] = None
+            if st.get("win_fullscreen"):
+                if st.get("fullscreen"):
+                    st["win_fullscreen"](False)  # із плеєра — назад у звичайне вікно
+                st["win_fullscreen"] = None
         page.views.pop()
         cover_views()
         top = page.views[-1]
@@ -5014,7 +5072,9 @@ def main(page: ft.Page, reopen=None):
                                     time.monotonic() - st.get("fullscreen_exit", 0) < 0.8):
             # Esc у повноекранному режимі — повертаємось до звичайного плеєра, а не до серій
             video = st.get("video")
-            if st.get("fullscreen") and video is not None:
+            if st.get("fullscreen") and st.get("win_fullscreen"):
+                st["win_fullscreen"](False)
+            elif st.get("fullscreen") and video is not None:
                 video.fullscreen = False
                 video.update()
             st["fullscreen"] = False
