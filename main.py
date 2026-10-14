@@ -293,13 +293,16 @@ def main(page: ft.Page, reopen=None):
         if not TV:
             page.show_dialog(dlg)
             return
-        buttons = []
+        buttons, fields = [], []
 
         def walk(c):
             if c is None:
                 return
             if isinstance(c, (ft.FilledButton, ft.TextButton, ft.OutlinedButton, ft.IconButton)):
                 buttons.append(c)
+                return
+            if isinstance(c, ft.TextField):
+                fields.append(c)
                 return
             for attr in ("content", "controls", "actions"):
                 v = getattr(c, attr, None)
@@ -315,7 +318,9 @@ def main(page: ft.Page, reopen=None):
                 b.style = ft.ButtonStyle()
             b.style.side = TV_FOCUS_SIDE
         page.show_dialog(dlg)  # після стилів: інакше зміни вже не дійдуть до екрана
-        target = next((b for b in buttons if getattr(b, "autofocus", False)), None) or \
+        # поле вводу (пошук) — першим: фокус на ньому відкриває клавіатуру телевізора
+        target = next((f for f in fields if f.autofocus), None) or \
+            next((b for b in buttons if getattr(b, "autofocus", False)), None) or \
             next((b for b in reversed(buttons) if isinstance(b, ft.FilledButton)), None) or \
             (buttons[0] if buttons else None)
         if target is not None:
@@ -913,6 +918,22 @@ def main(page: ft.Page, reopen=None):
             seen = dict(list(seen.items())[-150:])
         entry["seen"] = seen
         history[:] = [entry] + [h for h in history if h["url"] != item["url"]]
+        save_history()
+
+    def mark_watched(ctx, ep):
+        """Позначити серію переглянутою (✓ у списку серій), не чіпаючи «де зупинились»."""
+        if not settings["keep_history"]:
+            return
+        key = next((f"{i}:{j}" for i, season in enumerate(ctx["seasons"])
+                    for j, e in enumerate(season["episodes"]) if e is ep), None)
+        h = history_entry(ctx["item"]["url"])
+        if key is None or h is None:
+            return
+        seen = dict(h.get("seen") or {})
+        if seen.get(key, 0) >= 0.9:
+            return
+        seen[key] = 1.0
+        h["seen"] = seen
         save_history()
 
     def find_episode(ctx, h):
@@ -4431,6 +4452,10 @@ def main(page: ft.Page, reopen=None):
                 refresh_bar()
                 hide_next()
                 view.update()
+                if idx == prev_idx + 1:
+                    # перейшли на наступну серію — попередня переглянута, навіть якщо титри
+                    # не додивились
+                    mark_watched(ctx, queue[prev_idx][1])
                 if idx > prev_idx and (p.get("stop_after") == prev_idx
                                        or p.get("sleep_after") == prev_idx):
                     # «Скасувати» наступну серію / таймер сну «після цієї серії» — наступна
@@ -4692,6 +4717,11 @@ def main(page: ft.Page, reopen=None):
             st["player_resize"] = on_page_resize
             orient["cb"] = on_orient
         st["video"] = video
+        # ПК: міні-плеєр — маленьке вікно поверх інших (як плаваюче вікно на телефоні)
+        mini_btn = ft.IconButton(
+            ft.Icons.PICTURE_IN_PICTURE_ALT_ROUNDED, icon_color="#FFFFFF", icon_size=20,
+            tooltip="Міні-плеєр", visible=is_desktop,
+            on_click=lambda e: p["toggle_mini"]() if p.get("toggle_mini") else None)
         bar = drag_area(ft.Container(
             ft.Row([
                 round_button(ft.Icons.ARROW_BACK_IOS_NEW_ROUNDED, lambda e: go_back(), "Назад",
@@ -4699,6 +4729,7 @@ def main(page: ft.Page, reopen=None):
                 ft.Column([ft.Text(show, size=15, weight=ft.FontWeight.W_700, color="#FFFFFF",
                                    max_lines=1, overflow=ft.TextOverflow.ELLIPSIS), now],
                           spacing=0, expand=True),
+                mini_btn,
                 *win_buttons(on_dark=True),
             ], spacing=10),
             padding=ft.Padding.only(left=14 + traffic_gap, right=8 if is_win else 14, top=8,
@@ -4790,6 +4821,7 @@ def main(page: ft.Page, reopen=None):
         hud = ft.Container(
             ft.Row([vol_icon, vol_bar, vol_text], spacing=10, tight=True),
             top=22, right=22, opacity=0, animate_opacity=ui.FAST,
+            ignore_interactions=True,  # не перехоплювати кліки по кнопках під нею
             padding=ft.Padding.symmetric(horizontal=14, vertical=10), border_radius=12,
             bgcolor="#99101114", border=ft.Border.all(1, "#1FFFFFFF"))
         p["vol"] = 100
@@ -4813,6 +4845,50 @@ def main(page: ft.Page, reopen=None):
             page.run_task(hide_hud_later, p["hud_token"])
 
         st["volume_hud"] = volume_hud
+
+        # ── міні-плеєр: вікно 480×270 поверх інших у правому нижньому куті поточного вікна;
+        #    повторне натискання (чи вихід із плеєра) — назад до попереднього розміру й місця
+        mini = {"on": False, "saved": None}
+
+        def toggle_mini():
+            w = page.window
+            if not mini["on"]:
+                mini["saved"] = dict(width=w.width, height=w.height, left=w.left, top=w.top,
+                                     min_width=w.min_width, min_height=w.min_height,
+                                     maximized=w.maximized, full_screen=w.full_screen)
+                mw, mh = 480, 270
+                if w.full_screen:
+                    w.full_screen = False
+                if w.maximized:
+                    w.maximized = False
+                if w.left is not None and w.top is not None and w.width and w.height:
+                    w.left = w.left + w.width - mw - 24
+                    w.top = w.top + w.height - mh - 24
+                w.min_width, w.min_height = 320, 180
+                w.width, w.height = mw, mh
+                w.always_on_top = True
+                if is_mac:
+                    w.title_bar_buttons_hidden = True  # «світлофор» у мініатюрі заважає
+                mini_btn.icon, mini_btn.tooltip = ft.Icons.OPEN_IN_FULL_ROUNDED, "Розгорнути"
+                mini["on"] = True
+            else:
+                sv = mini["saved"] or {}
+                w.always_on_top = False
+                if is_mac:
+                    w.title_bar_buttons_hidden = False
+                for k in ("min_width", "min_height", "width", "height", "left", "top"):
+                    if sv.get(k) is not None:
+                        setattr(w, k, sv[k])
+                if sv.get("maximized"):
+                    w.maximized = True
+                mini_btn.icon, mini_btn.tooltip = ft.Icons.PICTURE_IN_PICTURE_ALT_ROUNDED, \
+                    "Міні-плеєр"
+                mini["on"] = False
+            page.update()
+
+        p["toggle_mini"] = toggle_mini
+        # вихід із плеєра в міні-режимі — спершу повернути вікно
+        st["mini_restore"] = lambda: toggle_mini() if mini["on"] else None
         page.run_task(hide_bar_later, 0)
         return ft.GestureDetector(
             ft.Stack([video, bar_box, hud, next_card], expand=True),
@@ -4878,6 +4954,9 @@ def main(page: ft.Page, reopen=None):
             return
         if page.views[-1].route == "/play":
             set_pip(False)
+            if st.get("mini_restore"):
+                st["mini_restore"]()
+                st["mini_restore"] = None
         page.views.pop()
         cover_views()
         top = page.views[-1]
