@@ -1517,12 +1517,22 @@ def main(page: ft.Page, reopen=None):
             card.on_click = None
             card.shadow = None
             card.animate = card.animate_scale = None
-            w = tv_w or TV_CARD_W
+            # рамка фокуса — ЗОВНІ картки, із зазором (як у Netflix / Apple TV): намальована на
+            # самій картці, вона мала інший заокруглений край, ніж постер, і в кутах світились
+            # білі «клинці». Загальний розмір (картка + зазор + рамка) — як і раніше.
+            ring_pad = 6  # 3 рамка + 3 зазор
+            w = (tv_w or TV_CARD_W) - 2 * ring_pad
             card.width, card.height = w, w / POSTER_RATIO
-            # телевізор: лише біла рамка фокуса (її малює Flutter, миттєво) — без масштабу,
-            # тіней і анімацій, що на слабкому процесорі гальмують
+            outer = ft.Container(card, padding=3, border_radius=20,
+                                 border=ft.Border.all(3, ft.Colors.TRANSPARENT))
+
+            def ring(f):
+                outer.border = ft.Border.all(3, focus_ring if f else ft.Colors.TRANSPARENT)
+                outer.update()
+
             return ui.appear(focusable(
-                card, lambda e: on_open() if on_open else page.run_task(open_title, item)))
+                outer, lambda e: on_open() if on_open else page.run_task(open_title, item),
+                on_focus_change=ring, radius=20))
         card.on_hover = lambda e: highlight(ui.hovered(e))
         return ui.appear(card)
 
