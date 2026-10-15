@@ -3986,15 +3986,17 @@ def main(page: ft.Page, reopen=None):
             if not devices:
                 devices_col.controls = [
                     ft.Text("Пристроїв не знайдено.", color=TEXT, weight=ft.FontWeight.W_600),
-                    ft.Text("Телефон і телевізор (Chromecast, Google TV, Android TV) мають бути "
-                            "в одній Wi-Fi мережі, а телевізор — увімкнений.", color=MUTED, size=13),
+                    ft.Text("Телефон і телевізор (Chromecast, Google TV, Android TV або з DLNA — "
+                            "Hisense VIDAA, Samsung, LG) мають бути в одній Wi-Fi мережі, а "
+                            "телевізор — увімкнений.", color=MUTED, size=13),
                     ft.TextButton("Шукати ще раз", icon=ft.Icons.REFRESH_ROUNDED,
                                   style=ft.ButtonStyle(color=ACCENT, icon_color=ACCENT),
                                   on_click=lambda e: (page.pop_dialog(), page.run_task(open_cast)))]
             else:
                 devices_col.controls = [
                     ft.FilledButton(
-                        d["name"], icon=ft.Icons.TV_ROUNDED, width=dialog_width(),
+                        d["name"] + ("  ·  DLNA (бета)" if d.get("kind") == "dlna" else ""),
+                        icon=ft.Icons.TV_ROUNDED, width=dialog_width(),
                         on_click=lambda e, d=d: page.run_task(start_cast, d),
                         style=ft.ButtonStyle(bgcolor=SURFACE_2, color=TEXT, icon_color=ACCENT,
                                              alignment=ft.Alignment.CENTER_LEFT,
@@ -4020,7 +4022,8 @@ def main(page: ft.Page, reopen=None):
             toast(f"Підключаюсь до «{device['name']}»…", ft.Icons.CAST_ROUNDED)
 
             def connect():
-                sess = uafix_cast.Session(device["uuid"])
+                sess = uafix_cast.open_session(
+                    device, core.stream_headers(entry) if entry.get("referer") else None)
                 sess.play(core.quality_url(entry["url"], p["quality"]), title,
                           ctx["item"].get("poster"), start.in_milliseconds / 1000,
                           sub["url"] if sub else None)

@@ -1,4 +1,5 @@
-"""Трансляція на Chromecast / Google TV / Android TV (протокол Google Cast).
+"""Трансляція на Chromecast / Google TV / Android TV (протокол Google Cast), а також на
+телевізори з DLNA (Hisense VIDAA, Samsung, LG…) — див. dlna.py.
 
 Телевізор сам завантажує HLS-потік за посиланням (сервер відео віддає його без
 спеціальних заголовків і з CORS «*»), тож телефон лише керує відтворенням.
@@ -15,7 +16,33 @@ _devices = {}  # uuid → Chromecast
 
 
 def discover(timeout=6):
-    """Пристрої Cast у локальній мережі: [{uuid, name, model}]."""
+    """Пристрої в мережі: Google Cast і DLNA (пошук одночасно) — [{uuid, name, model, kind}]."""
+    import dlna
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(2) as pool:
+        cc = pool.submit(_discover_cast, timeout)
+        dl = pool.submit(dlna.discover, 4)
+        found = []
+        for fut, kind in ((cc, "cast"), (dl, "dlna")):
+            try:
+                found += [dict(d, kind=kind) for d in fut.result()]
+            except Exception:
+                pass
+    # один телевізор часто видно і як Cast, і як DLNA — лишаємо Cast (він надійніший)
+    cast_names = {d["name"] for d in found if d["kind"] == "cast"}
+    return [d for d in found if d["kind"] == "cast" or d["name"] not in cast_names]
+
+
+def open_session(device, headers=None):
+    """Сесія для пристрою зі списку discover()."""
+    if device.get("kind") == "dlna":
+        import dlna
+        return dlna.Session(device["uuid"], headers)
+    return Session(device["uuid"])
+
+
+def _discover_cast(timeout):
     import pychromecast
 
     global _browser
