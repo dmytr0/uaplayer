@@ -396,6 +396,8 @@ def main(page: ft.Page, reopen=None):
     # pos, dur, ts}] — найновіше першим. Позиція (pos) і тривалість (dur) — у мілісекундах.
     history = []
     HISTORY_MAX = 40
+    searches = []  # нещодавні пошуки (лише на цьому пристрої) — новіші першими
+    SEARCHES_MAX = 10
     favorites = []  # обране: [{url, title, orig, poster, age}] — новіше першим
 
     def is_favorite(url):
@@ -432,6 +434,12 @@ def main(page: ft.Page, reopen=None):
             raw = await prefs.get("favorites")
             if raw:
                 favorites[:] = json.loads(raw)
+            raw = await prefs.get("searches")
+            if raw:
+                searches[:] = json.loads(raw)[:SEARCHES_MAX]
+            raw = await prefs.get("tv_hosts")  # телевізори, додані за IP (dlna.py)
+            if raw:
+                dlna.MANUAL_HOSTS[:] = json.loads(raw)
             if settings["layout"] not in ("grid", "list"):
                 settings["layout"] = "list" if TV else "grid"
             apply_layout_default()
@@ -1315,8 +1323,75 @@ def main(page: ft.Page, reopen=None):
         if visible != clear_btn.visible:
             clear_btn.visible = visible
             clear_btn.update()
+        if st.get("search_has_focus"):
+            fill_recent()  # нещодавні — лише ті, що містять набране
+
+    # ── нещодавні пошуки: смуга під верхньою панеллю, поки поле пошуку у фокусі
+    recent_row = ft.Row([], spacing=8, scroll=ft.ScrollMode.HIDDEN,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER)
+    recent_bar = ft.Container(
+        recent_row, visible=False, bgcolor=BG,
+        padding=ft.Padding.only(left=14 if is_mobile else 24, right=14, top=10, bottom=10),
+        border=ft.Border.only(bottom=ft.BorderSide(1, BORDER)))
+
+    def recent_chips(on_pick, typed=""):
+        t = typed.strip().lower()
+        items = [q for q in searches if t in q.lower()] if t else list(searches)
+
+        def forget(q):
+            def handler(e):
+                searches[:] = [x for x in searches if x != q]
+                page.run_task(prefs.set, "searches", json.dumps(searches, ensure_ascii=False))
+                fill_recent()
+            return handler
+
+        def clear_all(e):
+            searches.clear()
+            page.run_task(prefs.set, "searches", "[]")
+            show_recent(False)
+
+        chips = [ft.Chip(ft.Text(q, size=13, color=TEXT), bgcolor=SURFACE_2,
+                         leading=ft.Icon(ft.Icons.HISTORY_ROUNDED, size=16, color=MUTED),
+                         on_click=lambda e, q=q: on_pick(q), on_delete=forget(q),
+                         delete_icon_color=MUTED, delete_icon_tooltip="Прибрати",
+                         shape=ft.RoundedRectangleBorder(radius=10),
+                         border_side=ft.BorderSide(1, BORDER))
+                 for q in items]
+        if chips:
+            chips.append(ft.TextButton("Очистити історію", on_click=clear_all,
+                                       style=ft.ButtonStyle(color=MUTED)))
+        return chips
+
+    def pick_recent(q):
+        search.value = q
+        clear_btn.visible = True
+        page.run_task(do_search, q)
+
+    def fill_recent():
+        recent_row.controls = [ft.Text("Нещодавні:", size=13, color=MUTED)] + \
+            recent_chips(pick_recent, search.value or "")
+        recent_bar.visible = bool(st.get("search_has_focus")) and len(recent_row.controls) > 1
+        try:
+            recent_bar.update()
+        except Exception:
+            pass
+
+    def show_recent(on):
+        st["search_has_focus"] = on
+        fill_recent()
+
+    async def hide_recent_later():
+        await asyncio.sleep(0.25)  # дати спрацювати кліку по запиту, перш ніж сховати
+        if not st.get("search_has_focus"):
+            fill_recent()
+
+    def search_blur(e):
+        quiet()
+        st["search_has_focus"] = False
+        page.run_task(hide_recent_later)
 
     search = ft.TextField(
+        on_focus=lambda e: (quiet(), show_recent(True)), on_blur=search_blur,
         hint_text="Пошук фільмів і серіалів", height=40, text_size=14, dense=True,
         filled=True, fill_color=SURFACE_2,
         border={
@@ -1399,10 +1474,19 @@ def main(page: ft.Page, reopen=None):
                                          ft.ControlState.DEFAULT: ft.OutlineInputBorder(
                                              border_radius=12, side=ft.BorderSide(1, BORDER))},
                                  width=560, on_submit=submit)
+            def tv_pick(q):
+                page.pop_dialog()
+                page.run_task(do_search, q)
+
+            tv_recent = recent_chips(tv_pick)
             show_dialog(ft.AlertDialog(
                 title=ft.Text("Пошук", size=24, weight=ft.FontWeight.W_800),
                 bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
-                content=field,
+                content=ft.Column([field] + ([ft.Text("Нещодавні", color=MUTED, size=16),
+                                              ft.Row(tv_recent[:-1], wrap=True, spacing=10,
+                                                     run_spacing=10, width=560)]
+                                             if tv_recent else []),
+                                  tight=True, spacing=14),
                 actions=[ft.TextButton("Скасувати", on_click=lambda e: page.pop_dialog(),
                                        style=ft.ButtonStyle(color=MUTED)),
                          ft.FilledButton("Шукати", icon=ft.Icons.SEARCH_ROUNDED, on_click=submit,
@@ -1894,10 +1978,16 @@ def main(page: ft.Page, reopen=None):
         if not TV:
             page.run_task(reveal_cards, cards[:24])
 
+    def remember_search(q):
+        searches[:] = [q] + [x for x in searches if x.lower() != q.lower()][:SEARCHES_MAX - 1]
+        page.run_task(prefs.set, "searches", json.dumps(searches, ensure_ascii=False))
+
     async def do_search(q):
         q = (q or "").strip()
         if not q:
             return
+        remember_search(q)
+        show_recent(False)
         st["mode"] = ("search", q)
         drawer.selected_index = st["nav_index"] = None
         mark_nav()
@@ -2451,7 +2541,8 @@ def main(page: ft.Page, reopen=None):
 
     home = ft.View(
         route="/", padding=0, bgcolor=BG, drawer=drawer,
-        controls=[safe(ft.Column([top_bar_box, genre_bar, home_body], expand=True, spacing=0))],
+        controls=[safe(ft.Column([top_bar_box, recent_bar, genre_bar, home_body], expand=True,
+                                 spacing=0))],
     )
 
     # «Назад» на головному екрані Android (телефон і TV): з пошуку чи розділу — на головну,
@@ -3964,6 +4055,70 @@ def main(page: ft.Page, reopen=None):
             reload_playlist(pos)
 
         # ── трансляція на Chromecast / Google TV
+        def by_ip_button():
+            return ft.TextButton("Підключити за IP-адресою", icon=ft.Icons.LAN_OUTLINED,
+                                 style=ft.ButtonStyle(color=MUTED, icon_color=MUTED),
+                                 on_click=lambda e: (page.pop_dialog(), open_cast_by_ip()))
+
+        def open_cast_by_ip():
+            """Телевізор за IP (якщо роутер не пропускає пошук): заодно — діагностика."""
+            field = ft.TextField(value=(dlna.MANUAL_HOSTS or [""])[0], hint_text="192.168.1.50",
+                                 keyboard_type=ft.KeyboardType.URL, autofocus=True,
+                                 filled=True, fill_color=SURFACE_2, cursor_color=ACCENT)
+            result = ft.Text("IP-адреса телевізора — у його налаштуваннях: «Мережа → "
+                             "Інформація про мережу» (або «Стан мережі»).", color=MUTED, size=13,
+                             expand=True)
+            busy = ft.ProgressRing(width=18, height=18, stroke_width=2, color=ACCENT, visible=False)
+
+            async def check(e=None):
+                host = (field.value or "").strip()
+                if not re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host):
+                    result.value = "Введіть адресу у вигляді 192.168.1.50"
+                    result.update()
+                    return
+                busy.visible = True
+                result.value = "Перевіряю…"
+                page.update()
+                try:
+                    r = await asyncio.to_thread(dlna.probe, host)
+                except Exception:
+                    r = {"reachable": False, "dlna": [], "airplay": False, "cast": False}
+                busy.visible = False
+                hosts = [host] + [h for h in dlna.MANUAL_HOSTS if h != host]
+                dlna.MANUAL_HOSTS[:] = hosts[:3]
+                page.run_task(prefs.set, "tv_hosts", json.dumps(dlna.MANUAL_HOSTS))
+                if r["dlna"]:
+                    page.pop_dialog()
+                    await start_cast(dict(r["dlna"][0], kind="dlna"))
+                    return
+                if not r["reachable"]:
+                    result.value = ("Телевізор за цією адресою не відповідає. Ймовірно, роутер "
+                                    "ізолює пристрої один від одного (гостьова мережа чи "
+                                    "«ізоляція клієнтів» у налаштуваннях роутера) — або адреса "
+                                    "інша. Телефон і телевізор мають бути в одній мережі.")
+                else:
+                    extra = []
+                    if r["airplay"]:
+                        extra.append("є AirPlay")
+                    if r["cast"]:
+                        extra.append("є Google Cast")
+                    result.value = ("Телевізор відповідає, але DLNA-плеєр у ньому не знайдено"
+                                    + (f" ({', '.join(extra)})" if extra else "")
+                                    + ". Напишіть про це автору через «Повідомити про проблему».")
+                page.update()
+
+            field.on_submit = lambda e: page.run_task(check)
+            show_dialog(ft.AlertDialog(
+                title=ft.Text("Телевізор за IP-адресою", weight=ft.FontWeight.W_800),
+                bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
+                content=ft.Column([field, ft.Row([busy, result], spacing=10,
+                                                 vertical_alignment=ft.CrossAxisAlignment.START)],
+                                  tight=True, spacing=14, width=dialog_width()),
+                actions=[ft.TextButton("Скасувати", on_click=lambda e: page.pop_dialog(),
+                                       style=ft.ButtonStyle(color=MUTED)),
+                         ft.FilledButton("Підключити", on_click=lambda e: page.run_task(check),
+                                         style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF"))]))
+
         async def open_cast():
             if p.get("cast"):
                 show_cast_panel()
@@ -3998,7 +4153,8 @@ def main(page: ft.Page, reopen=None):
                       if dlna.LAST_SEEN else []),
                     ft.TextButton("Шукати ще раз", icon=ft.Icons.REFRESH_ROUNDED,
                                   style=ft.ButtonStyle(color=ACCENT, icon_color=ACCENT),
-                                  on_click=lambda e: (page.pop_dialog(), page.run_task(open_cast)))]
+                                  on_click=lambda e: (page.pop_dialog(), page.run_task(open_cast))),
+                    by_ip_button()]
             else:
                 devices_col.controls = [
                     ft.FilledButton(
@@ -4009,7 +4165,7 @@ def main(page: ft.Page, reopen=None):
                                              alignment=ft.Alignment.CENTER_LEFT,
                                              padding=ft.Padding.symmetric(horizontal=18, vertical=16),
                                              shape=ft.RoundedRectangleBorder(radius=12)))
-                    for d in devices]
+                    for d in devices] + [by_ip_button()]
             try:
                 dlg.update()
             except Exception:

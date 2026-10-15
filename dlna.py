@@ -23,6 +23,7 @@ _devices = {}  # uuid → {"name", "location", "control", "host"}
 
 # ───────── пошук ─────────
 
+MANUAL_HOSTS = []  # IP телевізорів, доданих вручну: їх питаємо напряму (повз мультикаст)
 LAST_SEEN = []  # хто відповів на пошук, але не є телевізором (для підказки «не знайдено»)
 
 
@@ -40,6 +41,11 @@ def discover(timeout=4):
                    f"MAN: \"ssdp:discover\"\r\nMX: 2\r\nST: {st}\r\n\r\n").encode()
             for _ in range(2):
                 s.sendto(msg, ("239.255.255.250", 1900))
+                for host in MANUAL_HOSTS:  # напряму — якщо роутер не пропускає мультикаст
+                    try:
+                        s.sendto(msg, (host, 1900))
+                    except OSError:
+                        pass
         end = time.time() + timeout
         while time.time() < end:
             try:
@@ -65,6 +71,25 @@ def discover(timeout=4):
             others.add(dev["name"])
     LAST_SEEN[:] = sorted(others - {d["name"] for d in found})
     return found
+
+
+def probe(host, timeout=4):
+    """Діагностика телевізора за IP: чи досяжний, чи є DLNA (і знайдений пристрій), AirPlay,
+    Google Cast. → {"reachable", "dlna": [devices], "airplay", "cast"}."""
+    def port_open(port):
+        try:
+            with socket.create_connection((host, port), timeout=1.5):
+                return True
+        except OSError:
+            return False
+
+    if host not in MANUAL_HOSTS:
+        MANUAL_HOSTS.insert(0, host)
+    found = [d for d in discover(timeout) if _devices[d["uuid"]]["host"] == host]
+    open_ports = {p for p in (7000, 8008, 8009, 1900, 80, 8080, 9197, 38400, 49152, 56789)
+                  if port_open(p)}
+    return {"reachable": bool(found or open_ports), "dlna": found,
+            "airplay": 7000 in open_ports, "cast": bool({8008, 8009} & open_ports)}
 
 
 def _tag(xml, name):
