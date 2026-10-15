@@ -438,12 +438,6 @@ def main(page: ft.Page, reopen=None):
             raw = await prefs.get("searches")
             if raw:
                 searches[:] = json.loads(raw)[:SEARCHES_MAX]
-            raw = await prefs.get("tv_hosts")  # телевізори, додані за IP (dlna.py)
-            if raw:
-                dlna.MANUAL_HOSTS[:] = json.loads(raw)
-            raw = await prefs.get("tv_desc")  # їхні описи DLNA, знайдені перебором портів
-            if raw:
-                dlna.KNOWN_LOCATIONS[:] = json.loads(raw)
             raw = await prefs.get("airplay_creds")  # ключі спарювання AirPlay
             if raw:
                 airplay.CREDENTIALS.update(json.loads(raw))
@@ -709,12 +703,7 @@ def main(page: ft.Page, reopen=None):
                 toast("Не вдалося перевірити оновлення", ft.Icons.ERROR_OUTLINE_ROUNDED)
             return
         await prefs.set("update_checked_at", now)
-        st["update_rel"] = rel if updater.is_newer(rel["version"]) else None
-        fill_bell()
-        try:
-            bell.update()
-        except Exception:
-            pass
+        set_update_rel(rel if updater.is_newer(rel["version"], updater.VERSION) else None)
         if updater.is_newer(rel["version"]) and (
                 manual or rel["version"] != settings.get("skipped_version")):
             show_update_dialog(rel)
@@ -1482,16 +1471,30 @@ def main(page: ft.Page, reopen=None):
                                                    color=TEXT, weight=ft.FontWeight.W_700),
                                            ft.Text("Натисніть, щоб оновити", color=MUTED, size=12)],
                                           spacing=0, tight=True)], spacing=12),
-                on_click=lambda e: show_update_dialog(rel)))
+                on_click=lambda e: (quiet(), show_update_dialog(rel))))
         else:
             items.append(ft.PopupMenuItem(
                 content=ft.Text("Нових сповіщень немає", color=MUTED), disabled=True))
         items.append(ft.PopupMenuItem(
             content=ft.Row([ft.Icon(ft.Icons.REFRESH_ROUNDED, color=MUTED, size=18),
                             ft.Text("Перевірити оновлення", color=TEXT)], spacing=12),
-            on_click=lambda e: page.run_task(check_updates, True)))
+            # quiet: без автооновлення всієї сторінки після кліку — від нього блимав вміст
+            on_click=lambda e: (quiet(), page.run_task(check_updates, True))))
         bell.items = items
         bell_dot.visible = bool(rel)
+
+    def set_update_rel(rel):
+        """Запам'ятати знайдену версію; дзвіночок оновлюється лише якщо щось змінилось —
+        інакше його оновлення перемальовувало верхню панель (блимало)."""
+        old = (st.get("update_rel") or {}).get("version")
+        st["update_rel"] = rel
+        if (rel or {}).get("version") == old:
+            return
+        fill_bell()
+        try:
+            bell.update()
+        except Exception:
+            pass
 
     async def refresh_bell():
         """Тихо дізнатись, чи вийшла нова версія (для крапки на дзвіночку) — без вікон."""
@@ -1502,12 +1505,7 @@ def main(page: ft.Page, reopen=None):
             rel = await asyncio.to_thread(updater.latest_release)
         except Exception:
             return
-        st["update_rel"] = rel if updater.is_newer(rel["version"], updater.VERSION) else None
-        fill_bell()
-        try:
-            bell.update()
-        except Exception:
-            pass
+        set_update_rel(rel if updater.is_newer(rel["version"], updater.VERSION) else None)
 
     async def bell_loop(gen):
         while RUN["gen"] == gen:
@@ -4188,72 +4186,6 @@ def main(page: ft.Page, reopen=None):
                          ft.FilledButton("Спарити", on_click=lambda e: page.run_task(done),
                                          style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF"))]))
 
-        def by_ip_button():
-            return ft.TextButton("Підключити за IP-адресою", icon=ft.Icons.LAN_OUTLINED,
-                                 style=ft.ButtonStyle(color=MUTED, icon_color=MUTED),
-                                 on_click=lambda e: (page.pop_dialog(), open_cast_by_ip()))
-
-        def open_cast_by_ip():
-            """Телевізор за IP (якщо роутер не пропускає пошук): заодно — діагностика."""
-            field = ft.TextField(value=(dlna.MANUAL_HOSTS or [""])[0], hint_text="192.168.1.50",
-                                 keyboard_type=ft.KeyboardType.URL, autofocus=True,
-                                 filled=True, fill_color=SURFACE_2, cursor_color=ACCENT)
-            result = ft.Text("IP-адреса телевізора — у його налаштуваннях: «Мережа → "
-                             "Інформація про мережу» (або «Стан мережі»).", color=MUTED, size=13,
-                             expand=True)
-            busy = ft.ProgressRing(width=18, height=18, stroke_width=2, color=ACCENT, visible=False)
-
-            async def check(e=None):
-                host = (field.value or "").strip()
-                if not re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host):
-                    result.value = "Введіть адресу у вигляді 192.168.1.50"
-                    result.update()
-                    return
-                busy.visible = True
-                result.value = "Перевіряю телевізор — до пів хвилини…"
-                page.update()
-                try:
-                    r = await asyncio.to_thread(dlna.probe, host)
-                except Exception:
-                    r = {"reachable": False, "dlna": [], "airplay": False, "cast": False}
-                busy.visible = False
-                hosts = [host] + [h for h in dlna.MANUAL_HOSTS if h != host]
-                dlna.MANUAL_HOSTS[:] = hosts[:3]
-                page.run_task(prefs.set, "tv_hosts", json.dumps(dlna.MANUAL_HOSTS))
-                page.run_task(prefs.set, "tv_desc", json.dumps(dlna.KNOWN_LOCATIONS[:3]))
-                if r["dlna"]:
-                    page.pop_dialog()
-                    await start_cast(dict(r["dlna"][0], kind="dlna"))
-                    return
-                if not r["reachable"]:
-                    result.value = ("Телевізор за цією адресою не відповідає. Ймовірно, роутер "
-                                    "ізолює пристрої один від одного (гостьова мережа чи "
-                                    "«ізоляція клієнтів» у налаштуваннях роутера) — або адреса "
-                                    "інша. Телефон і телевізор мають бути в одній мережі.")
-                elif r["airplay"]:
-                    page.pop_dialog()
-                    dev = await asyncio.to_thread(airplay.device, host)
-                    await start_cast(dev)
-                    return
-                else:
-                    result.value = ("Телевізор відповідає, але ні DLNA, ні AirPlay у ньому не "
-                                    "знайдено" + (" (є Google Cast)" if r["cast"] else "")
-                                    + f". Відкриті порти: {', '.join(map(str, dlna.SCAN_OPEN[:20])) or '—'}"
-                                    ". Надішліть це автору через «Повідомити про проблему».")
-                page.update()
-
-            field.on_submit = lambda e: page.run_task(check)
-            show_dialog(ft.AlertDialog(
-                title=ft.Text("Телевізор за IP-адресою", weight=ft.FontWeight.W_800),
-                bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
-                content=ft.Column([field, ft.Row([busy, result], spacing=10,
-                                                 vertical_alignment=ft.CrossAxisAlignment.START)],
-                                  tight=True, spacing=14, width=dialog_width()),
-                actions=[ft.TextButton("Скасувати", on_click=lambda e: page.pop_dialog(),
-                                       style=ft.ButtonStyle(color=MUTED)),
-                         ft.FilledButton("Підключити", on_click=lambda e: page.run_task(check),
-                                         style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF"))]))
-
         async def open_cast():
             if p.get("cast"):
                 show_cast_panel()
@@ -4288,8 +4220,7 @@ def main(page: ft.Page, reopen=None):
                       if dlna.LAST_SEEN else []),
                     ft.TextButton("Шукати ще раз", icon=ft.Icons.REFRESH_ROUNDED,
                                   style=ft.ButtonStyle(color=ACCENT, icon_color=ACCENT),
-                                  on_click=lambda e: (page.pop_dialog(), page.run_task(open_cast))),
-                    by_ip_button()]
+                                  on_click=lambda e: (page.pop_dialog(), page.run_task(open_cast)))]
             else:
                 devices_col.controls = [
                     ft.FilledButton(
@@ -4300,7 +4231,7 @@ def main(page: ft.Page, reopen=None):
                                              alignment=ft.Alignment.CENTER_LEFT,
                                              padding=ft.Padding.symmetric(horizontal=18, vertical=16),
                                              shape=ft.RoundedRectangleBorder(radius=12)))
-                    for d in devices] + [by_ip_button()]
+                    for d in devices]
             try:
                 dlg.update()
             except Exception:
