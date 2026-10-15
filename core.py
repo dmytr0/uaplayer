@@ -301,8 +301,10 @@ def voice_name(tab, url):
     """Назва озвучки за підписом вкладки плеєра («Плеєр 2 (субтитри)») та іменем файлу."""
     t, u = (tab or "").lower(), url.lower()
     # «_eng_» у назві файлу — оригінал, але лише якщо там немає й української:
-    # «…_ukr_eng_…» — файл із двома доріжками, і грає в ньому саме українська
-    eng_file = re.search(r"[._]eng[._]", u) and not re.search(r"[._](ukr|ua|uk)[._]", u)
+    # «…_ukr_eng_…» чи «…_2xukr_eng_…» (дві українські доріжки) — файл із кількома
+    # доріжками, і грає в ньому саме українська
+    eng_file = re.search(r"[._]eng[._]", u) and \
+        not re.search(r"[._](\d+x)?(ukr|ua|uk)[._]", u)
     if "субтитр" in t or "оригінал" in t or "original" in t or eng_file:
         return "Оригінал (ENG)"
     if t and not re.match(r"^(плеєр|player|дивитись)", t):

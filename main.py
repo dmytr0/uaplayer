@@ -22,6 +22,7 @@ import flet_video as fv
 import appearance
 import cast as uafix_cast
 import core
+import dlna
 import feedback
 import sync
 import screen
@@ -3989,6 +3990,12 @@ def main(page: ft.Page, reopen=None):
                     ft.Text("Телефон і телевізор (Chromecast, Google TV, Android TV або з DLNA — "
                             "Hisense VIDAA, Samsung, LG) мають бути в одній Wi-Fi мережі, а "
                             "телевізор — увімкнений.", color=MUTED, size=13),
+                    ft.Text("Hisense VIDAA: увімкніть у телевізорі «Налаштування → Мережа → "
+                            "Content Sharing» (або «Підключення до мобільного»).",
+                            color=MUTED, size=13),
+                    *([ft.Text("У мережі відповіли, але це не телевізори: "
+                               + ", ".join(dlna.LAST_SEEN[:6]), color=MUTED, size=12)]
+                      if dlna.LAST_SEEN else []),
                     ft.TextButton("Шукати ще раз", icon=ft.Icons.REFRESH_ROUNDED,
                                   style=ft.ButtonStyle(color=ACCENT, icon_color=ACCENT),
                                   on_click=lambda e: (page.pop_dialog(), page.run_task(open_cast)))]

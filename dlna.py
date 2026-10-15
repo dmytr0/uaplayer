@@ -23,17 +23,23 @@ _devices = {}  # uuid → {"name", "location", "control", "host"}
 
 # ───────── пошук ─────────
 
+LAST_SEEN = []  # хто відповів на пошук, але не є телевізором (для підказки «не знайдено»)
+
+
 def discover(timeout=4):
     """Телевізори DLNA (MediaRenderer з AVTransport) у мережі: [{uuid, name, model}]."""
-    msg = ("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\n"
-           "MX: 2\r\nST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n").encode()
+    sts = ("urn:schemas-upnp-org:device:MediaRenderer:1",
+           "urn:schemas-upnp-org:service:AVTransport:1", "ssdp:all")
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
     s.settimeout(0.5)
     locations = set()
     try:
-        for _ in range(2):
-            s.sendto(msg, ("239.255.255.250", 1900))
+        for st in sts:
+            msg = ("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\n"
+                   f"MAN: \"ssdp:discover\"\r\nMX: 2\r\nST: {st}\r\n\r\n").encode()
+            for _ in range(2):
+                s.sendto(msg, ("239.255.255.250", 1900))
         end = time.time() + timeout
         while time.time() < end:
             try:
@@ -45,15 +51,19 @@ def discover(timeout=4):
                 locations.add(m.group(1).decode(errors="ignore"))
     finally:
         s.close()
-    found = []
+    found, others = [], set()
     for loc in locations:
         try:
             dev = _describe(loc)
         except Exception:
             continue
-        if dev and dev["uuid"] not in {d["uuid"] for d in found}:
-            _devices[dev["uuid"]] = dev
-            found.append({"uuid": dev["uuid"], "name": dev["name"], "model": dev["model"]})
+        if dev and dev.get("control"):
+            if dev["uuid"] not in {d["uuid"] for d in found}:
+                _devices[dev["uuid"]] = dev
+                found.append({"uuid": dev["uuid"], "name": dev["name"], "model": dev["model"]})
+        elif dev:
+            others.add(dev["name"])
+    LAST_SEEN[:] = sorted(others - {d["name"] for d in found})
     return found
 
 
@@ -68,8 +78,6 @@ def _describe(location):
     for svc in re.findall(r"<service>(.*?)</service>", xml, re.S):
         if "AVTransport" in _tag(svc, "serviceType"):
             control = urljoin(location, _tag(svc, "controlURL"))
-    if not control:
-        return None
     udn = _tag(xml, "UDN") or location
     return {"uuid": "dlna:" + udn, "name": _tag(xml, "friendlyName") or "Телевізор (DLNA)",
             "model": " ".join(x for x in (_tag(xml, "manufacturer"), _tag(xml, "modelName")) if x),
