@@ -441,6 +441,9 @@ def main(page: ft.Page, reopen=None):
             raw = await prefs.get("tv_hosts")  # телевізори, додані за IP (dlna.py)
             if raw:
                 dlna.MANUAL_HOSTS[:] = json.loads(raw)
+            raw = await prefs.get("airplay_creds")  # ключі спарювання AirPlay
+            if raw:
+                airplay.CREDENTIALS.update(json.loads(raw))
             if settings["layout"] not in ("grid", "list"):
                 settings["layout"] = "list" if TV else "grid"
             apply_layout_default()
@@ -4140,6 +4143,48 @@ def main(page: ft.Page, reopen=None):
         # ── трансляція на Chromecast / Google TV
         BETA_KIND = {"dlna": "  ·  DLNA (бета)", "airplay": "  ·  AirPlay (бета)"}
 
+        async def pair_airplay(device):
+            """Спарювання з AirPlay-телевізором: він показує PIN, користувач вводить його тут."""
+            pairing = airplay.Pairing(device["host"])
+            try:
+                await asyncio.to_thread(pairing.start)
+            except Exception as ex:
+                toast(f"Телевізор не почав спарювання: {ex}", ft.Icons.ERROR_OUTLINE_ROUNDED)
+                return
+            field = ft.TextField(hint_text="PIN-код", autofocus=True, text_size=22,
+                                 keyboard_type=ft.KeyboardType.NUMBER, max_length=8,
+                                 filled=True, fill_color=SURFACE_2, cursor_color=ACCENT)
+            msg = ft.Text("Введіть код, який зараз показує телевізор. Це потрібно лише один раз.",
+                          color=MUTED, size=13)
+
+            async def done(e=None):
+                pin = (field.value or "").strip()
+                if not pin:
+                    return
+                msg.value = "Спарюю…"
+                msg.update()
+                try:
+                    creds = await asyncio.to_thread(pairing.finish, pin)
+                except Exception as ex:
+                    msg.value = f"Не вдалося: {ex}"
+                    msg.update()
+                    return
+                airplay.CREDENTIALS[device["host"]] = creds
+                page.run_task(prefs.set, "airplay_creds", json.dumps(airplay.CREDENTIALS))
+                page.pop_dialog()
+                toast("Спарено — запускаю трансляцію", ft.Icons.CHECK_CIRCLE_ROUNDED)
+                await start_cast(device)
+
+            field.on_submit = lambda e: page.run_task(done)
+            show_dialog(ft.AlertDialog(
+                title=ft.Text(f"Спарювання з «{device['name']}»", weight=ft.FontWeight.W_800),
+                bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
+                content=ft.Column([msg, field], tight=True, spacing=12, width=dialog_width()),
+                actions=[ft.TextButton("Скасувати", on_click=lambda e: page.pop_dialog(),
+                                       style=ft.ButtonStyle(color=MUTED)),
+                         ft.FilledButton("Спарити", on_click=lambda e: page.run_task(done),
+                                         style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF"))]))
+
         def by_ip_button():
             return ft.TextButton("Підключити за IP-адресою", icon=ft.Icons.LAN_OUTLINED,
                                  style=ft.ButtonStyle(color=MUTED, icon_color=MUTED),
@@ -4279,6 +4324,9 @@ def main(page: ft.Page, reopen=None):
 
             try:
                 sess = await asyncio.to_thread(connect)
+            except airplay.PairingRequired:
+                await pair_airplay(device)  # один раз: PIN-код з екрана телевізора
+                return
             except Exception as ex:
                 # для бета-способів (DLNA, AirPlay) — причина: її можна переслати автору
                 why = f": {ex}" if device.get("kind") in ("dlna", "airplay") and str(ex) else ""
