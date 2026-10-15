@@ -441,6 +441,9 @@ def main(page: ft.Page, reopen=None):
             raw = await prefs.get("tv_hosts")  # телевізори, додані за IP (dlna.py)
             if raw:
                 dlna.MANUAL_HOSTS[:] = json.loads(raw)
+            raw = await prefs.get("tv_desc")  # їхні описи DLNA, знайдені перебором портів
+            if raw:
+                dlna.KNOWN_LOCATIONS[:] = json.loads(raw)
             raw = await prefs.get("airplay_creds")  # ключі спарювання AirPlay
             if raw:
                 airplay.CREDENTIALS.update(json.loads(raw))
@@ -4217,6 +4220,7 @@ def main(page: ft.Page, reopen=None):
                 hosts = [host] + [h for h in dlna.MANUAL_HOSTS if h != host]
                 dlna.MANUAL_HOSTS[:] = hosts[:3]
                 page.run_task(prefs.set, "tv_hosts", json.dumps(dlna.MANUAL_HOSTS))
+                page.run_task(prefs.set, "tv_desc", json.dumps(dlna.KNOWN_LOCATIONS[:3]))
                 if r["dlna"]:
                     page.pop_dialog()
                     await start_cast(dict(r["dlna"][0], kind="dlna"))
@@ -4234,7 +4238,8 @@ def main(page: ft.Page, reopen=None):
                 else:
                     result.value = ("Телевізор відповідає, але ні DLNA, ні AirPlay у ньому не "
                                     "знайдено" + (" (є Google Cast)" if r["cast"] else "")
-                                    + ". Напишіть про це автору через «Повідомити про проблему».")
+                                    + f". Відкриті порти: {', '.join(map(str, dlna.SCAN_OPEN[:12])) or '—'}"
+                                    ". Надішліть це автору через «Повідомити про проблему».")
                 page.update()
 
             field.on_submit = lambda e: page.run_task(check)
@@ -4330,6 +4335,8 @@ def main(page: ft.Page, reopen=None):
             except Exception as ex:
                 # для бета-способів (DLNA, AirPlay) — причина: її можна переслати автору
                 why = f": {ex}" if device.get("kind") in ("dlna", "airplay") and str(ex) else ""
+                if device.get("kind") == "airplay" and dlna.SCAN_OPEN:
+                    why += f"; порти: {', '.join(map(str, dlna.SCAN_OPEN[:12]))}"
                 toast(f"Не вдалося почати трансляцію на «{device['name']}»{why}",
                       ft.Icons.ERROR_OUTLINE_ROUNDED)
                 return

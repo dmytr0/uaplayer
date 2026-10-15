@@ -31,8 +31,10 @@ class Conn:
         self.cipher = None
         self.session_id = str(_uuid.uuid4()).upper()
 
-    def request(self, method, path, body=b"", ctype=None, extra=None):
-        head = [f"{method} {path} HTTP/1.1", f"Host: {self.host}:{PORT}", f"User-Agent: {UA}",
+    def request(self, method, path, body=b"", ctype=None, extra=None, proto="HTTP/1.1"):
+        self.cseq = getattr(self, "cseq", 0) + 1
+        head = [f"{method} {path} {proto}", f"Host: {self.host}:{PORT}", f"User-Agent: {UA}",
+                f"CSeq: {self.cseq}",
                 f"X-Apple-Session-ID: {self.session_id}", f"Content-Length: {len(body)}"]
         if ctype:
             head.append(f"Content-Type: {ctype}")
@@ -179,6 +181,25 @@ def info(host):
         return {"name": "", "model": ""}
 
 
+def features(host, conn=None):
+    """Що телевізор заявляє про себе: (відео, HLS, сирі прапорці) — з /info."""
+    try:
+        c = conn or Conn(host, timeout=4)
+        st, body = c.request("GET", "/info")
+        if not conn:
+            c.close()
+        d = plistlib.loads(body) if st < 400 and body else {}
+    except Exception:
+        return None, None, None
+    f = d.get("features")
+    if isinstance(f, str):  # «0x5A7FFFF7,0x1E» — молодші й старші 32 біти
+        parts = [int(x, 16) for x in f.split(",")]
+        f = parts[0] | (parts[1] << 32 if len(parts) > 1 else 0)
+    if not isinstance(f, int):
+        return None, None, d.get("features")
+    return bool(f & 1), bool(f & (1 << 4)), hex(f)
+
+
 def device(host):
     i = info(host)
     return {"uuid": f"airplay:{host}", "kind": "airplay", "host": host,
@@ -213,14 +234,14 @@ class Session:
                 CREDENTIALS.pop(self.host, None)  # ключі вже не дійсні — спарити заново
                 raise PairingRequired()
 
-    def _call(self, method, path, body=b"", ctype=None):
+    def _call(self, method, path, body=b"", ctype=None, proto="HTTP/1.1"):
         self._connect()
         try:
-            st, data = self.conn.request(method, path, body, ctype)
+            st, data = self.conn.request(method, path, body, ctype, proto=proto)
         except (OSError, ConnectionError):
             self.conn = None  # з'єднання впало — одна спроба наново
             self._connect()
-            st, data = self.conn.request(method, path, body, ctype)
+            st, data = self.conn.request(method, path, body, ctype, proto=proto)
         if st in (401, 403, 470):
             if not CREDENTIALS.get(self.host):
                 raise PairingRequired()
@@ -233,12 +254,24 @@ class Session:
         body = plistlib.dumps({"Content-Location": url, "Start-Position": 0.0,
                                "X-Apple-Session-ID": self.conn.session_id if self.conn else ""},
                               fmt=plistlib.FMT_BINARY)
-        try:
-            self._call("POST", "/play", body, "application/x-apple-binary-plist")
-        except RuntimeError:
-            # деякі приймачі хочуть старий текстовий формат
-            self._call("POST", "/play",
-                       f"Content-Location: {url}\nStart-Position: 0\n".encode(), "text/parameters")
+        attempts = [  # різні приймачі розуміють різні варіанти одного запиту
+            (body, "application/x-apple-binary-plist", "HTTP/1.1"),
+            (body, "application/x-apple-binary-plist", "RTSP/1.0"),
+            (f"Content-Location: {url}\nStart-Position: 0\n".encode(), "text/parameters", "HTTP/1.1"),
+        ]
+        last = None
+        for data, ctype, proto in attempts:
+            try:
+                self._call("POST", "/play", data, ctype, proto)
+                last = None
+                break
+            except RuntimeError as ex:
+                last = ex
+        if last:
+            video, hls, raw = features(self.host, self.conn)
+            yn = {True: "так", False: "ні", None: "?"}
+            raise RuntimeError(f"телевізор не відтворює відео за посиланням ({last}; "
+                               f"заявляє: відео — {yn[video]}, HLS — {yn[hls]}, {raw})")
         if start > 5:
             import time
             for _ in range(20):  # дочекатись, поки відео відкриється, і перемотати

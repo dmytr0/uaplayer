@@ -23,6 +23,7 @@ _devices = {}  # uuid → {"name", "location", "control", "host"}
 
 # ───────── пошук ─────────
 
+KNOWN_LOCATIONS = []  # адреси описів DLNA, знайдені перебором портів (їх питаємо одразу)
 MANUAL_HOSTS = []  # IP телевізорів, доданих вручну: їх питаємо напряму (повз мультикаст)
 LAST_SEEN = []  # хто відповів на пошук, але не є телевізором (для підказки «не знайдено»)
 
@@ -58,6 +59,7 @@ def discover(timeout=4):
     finally:
         s.close()
     found, others = [], set()
+    locations |= set(KNOWN_LOCATIONS)
     for loc in locations:
         try:
             dev = _describe(loc)
@@ -86,10 +88,61 @@ def probe(host, timeout=4):
     if host not in MANUAL_HOSTS:
         MANUAL_HOSTS.insert(0, host)
     found = [d for d in discover(timeout) if _devices[d["uuid"]]["host"] == host]
+    if not found:  # телевізор мовчить на пошук — шукаємо опис DLNA по портах напряму
+        dev = scan_description(host)
+        if dev:
+            _devices[dev["uuid"]] = dev
+            if dev["location"] not in KNOWN_LOCATIONS:
+                KNOWN_LOCATIONS.insert(0, dev["location"])
+            found = [{"uuid": dev["uuid"], "name": dev["name"], "model": dev["model"]}]
     open_ports = {p for p in (7000, 8008, 8009, 1900, 80, 8080, 9197, 38400, 49152, 56789)
                   if port_open(p)}
     return {"reachable": bool(found or open_ports), "dlna": found,
             "airplay": 7000 in open_ports, "cast": bool({8008, 8009} & open_ports)}
+
+
+# де телевізори зазвичай тримають опис DLNA (UPnP) — порти й шляхи
+SCAN_PORTS = sorted(set([80, 1400, 1900, 2869, 5000, 5001, 7676, 8000, 8008, 8060, 8080, 8200,
+                         8443, 9000, 9080, 9197, 10247, 52235, 55000, 55001, 56789, 60006, 62000]
+                        + list(range(38000, 38700)) + list(range(49152, 49500))
+                        + list(range(50000, 50100)) + list(range(57000, 57100))))
+DESC_PATHS = ("/description.xml", "/desc.xml", "/dmr.xml", "/MediaRenderer/desc.xml",
+              "/rootDesc.xml", "/dd.xml", "/upnp/desc.xml", "/DeviceDescription.xml",
+              "/dmr/desc.xml", "/", "/description/fetch", "/dlna/description.xml")
+
+
+def scan_description(host):
+    """Перебрати порти й шляхи, де буває опис UPnP MediaRenderer; знайдений пристрій або None."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def is_open(port):
+        try:
+            with socket.create_connection((host, port), timeout=0.4):
+                return port
+        except OSError:
+            return None
+
+    with ThreadPoolExecutor(128) as pool:
+        ports = [p for p in pool.map(is_open, SCAN_PORTS) if p]
+    SCAN_OPEN[:] = ports
+    for port in ports:
+        if port == 7000:
+            continue
+        for path in DESC_PATHS:
+            url = f"http://{host}:{port}{path}"
+            try:
+                r = requests.get(url, timeout=1.5)
+            except Exception:
+                break  # порт не говорить HTTP
+            if r.status_code == 200 and "AVTransport" in r.text:
+                try:
+                    return _describe(url)
+                except Exception:
+                    pass
+    return None
+
+
+SCAN_OPEN = []  # відкриті порти з останньої перевірки (для діагностики)
 
 
 def _tag(xml, name):
