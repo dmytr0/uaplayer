@@ -111,35 +111,48 @@ DESC_PATHS = ("/description.xml", "/desc.xml", "/dmr.xml", "/MediaRenderer/desc.
               "/dmr/desc.xml", "/", "/description/fetch", "/dlna/description.xml")
 
 
-def scan_description(host):
-    """Перебрати порти й шляхи, де буває опис UPnP MediaRenderer; знайдений пристрій або None."""
+def scan_description(host, full=True):
+    """Знайти опис UPnP MediaRenderer на телевізорі: спершу типові порти, потім (full) —
+    усі порти 1024–65535 (деякі телевізори, як Hisense VIDAA, тримають DLNA на випадковому
+    порту, про який кажуть лише мультикастом). Знайдений пристрій або None.
+    Відкриті порти — у SCAN_OPEN (для діагностики)."""
     from concurrent.futures import ThreadPoolExecutor
 
     def is_open(port):
         try:
-            with socket.create_connection((host, port), timeout=0.4):
+            with socket.create_connection((host, port), timeout=0.35):
                 return port
         except OSError:
             return None
 
+    def try_ports(ports):
+        for port in ports:
+            if port in (7000, 7100):  # AirPlay
+                continue
+            for path in DESC_PATHS:
+                url = f"http://{host}:{port}{path}"
+                try:
+                    r = requests.get(url, timeout=1.5)
+                except Exception:
+                    break  # порт не говорить HTTP
+                if r.status_code == 200 and "AVTransport" in r.text:
+                    try:
+                        return _describe(url)
+                    except Exception:
+                        pass
+        return None
+
     with ThreadPoolExecutor(128) as pool:
         ports = [p for p in pool.map(is_open, SCAN_PORTS) if p]
     SCAN_OPEN[:] = ports
-    for port in ports:
-        if port == 7000:
-            continue
-        for path in DESC_PATHS:
-            url = f"http://{host}:{port}{path}"
-            try:
-                r = requests.get(url, timeout=1.5)
-            except Exception:
-                break  # порт не говорить HTTP
-            if r.status_code == 200 and "AVTransport" in r.text:
-                try:
-                    return _describe(url)
-                except Exception:
-                    pass
-    return None
+    dev = try_ports(ports)
+    if dev or not full:
+        return dev
+    rest = [p for p in range(1024, 65536) if p not in set(SCAN_PORTS)]
+    with ThreadPoolExecutor(256) as pool:
+        more = [p for p in pool.map(is_open, rest) if p]
+    SCAN_OPEN[:] = sorted(set(ports) | set(more))
+    return try_ports(more)
 
 
 SCAN_OPEN = []  # відкриті порти з останньої перевірки (для діагностики)

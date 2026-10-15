@@ -4210,7 +4210,7 @@ def main(page: ft.Page, reopen=None):
                     result.update()
                     return
                 busy.visible = True
-                result.value = "Перевіряю…"
+                result.value = "Перевіряю телевізор — до пів хвилини…"
                 page.update()
                 try:
                     r = await asyncio.to_thread(dlna.probe, host)
@@ -4238,7 +4238,7 @@ def main(page: ft.Page, reopen=None):
                 else:
                     result.value = ("Телевізор відповідає, але ні DLNA, ні AirPlay у ньому не "
                                     "знайдено" + (" (є Google Cast)" if r["cast"] else "")
-                                    + f". Відкриті порти: {', '.join(map(str, dlna.SCAN_OPEN[:12])) or '—'}"
+                                    + f". Відкриті порти: {', '.join(map(str, dlna.SCAN_OPEN[:20])) or '—'}"
                                     ". Надішліть це автору через «Повідомити про проблему».")
                 page.update()
 
@@ -4336,7 +4336,7 @@ def main(page: ft.Page, reopen=None):
                 # для бета-способів (DLNA, AirPlay) — причина: її можна переслати автору
                 why = f": {ex}" if device.get("kind") in ("dlna", "airplay") and str(ex) else ""
                 if device.get("kind") == "airplay" and dlna.SCAN_OPEN:
-                    why += f"; порти: {', '.join(map(str, dlna.SCAN_OPEN[:12]))}"
+                    why += f"; відкриті порти: {', '.join(map(str, dlna.SCAN_OPEN[:20]))}"
                 toast(f"Не вдалося почати трансляцію на «{device['name']}»{why}",
                       ft.Icons.ERROR_OUTLINE_ROUNDED)
                 return
