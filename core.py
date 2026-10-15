@@ -48,6 +48,53 @@ def fetch(url, referer=None):
     return r.text
 
 
+# ───────── фільтри розділу (плагін сайту xfsort) ─────────
+# Сайт тримає вибрані фільтри в сесії (cookie): POST xf_sort=get по одному полю, далі всі
+# сторінки розділу — вже відфільтровані. Тому для кожного набору фільтрів — своя сесія, щоб
+# фільтри не впливали на решту застосунку.
+
+FILTER_TITLES = {"default": "Сортування"}  # назви кнопок замість «За замовчуванням»
+_filter_sessions = {}
+
+
+def section_filters(path):
+    """Фільтри розділу з його сторінки: [{field, title, options: [(value, label)]}]."""
+    soup = BeautifulSoup(fetch(catalog_url(path, 1)), "html.parser")
+    out = []
+    for sel in soup.select(".xfsort-block .xfsort-select"):
+        ul = sel.select_one(".xfsort-ul")
+        if not ul or not ul.get("data-field") or ul["data-field"].startswith("-"):
+            continue  # «Приховати аніме» — не фільтр, а виняток
+        items = [(li.get("data-val", ""), li.get_text(strip=True)) for li in ul.select("li")]
+        opts = [(v, t) for v, t in items if v]
+        if opts:
+            title = FILTER_TITLES.get(ul["data-field"]) or (items[0][1] if items else "")
+            out.append({"field": ul["data-field"], "title": title, "options": opts})
+    return out
+
+
+def catalog_filtered(path, page, filters):
+    """Сторінка розділу з фільтрами {field: value} → картки (як parse_catalog)."""
+    key = (path, tuple(sorted(filters.items())))
+    sess = _filter_sessions.get(key)
+    url1 = catalog_url(path, 1)
+    if sess is None:
+        sess = http.Session()  # нова сесія — фільтрів у ній ще немає, «скинути» не треба
+        last = None
+        for field, value in filters.items():
+            last = sess.post(url1, data={"xf_sort": "get", "xf_field": field, "xf_value": value},
+                             headers=HEADERS, timeout=20, **IMPERSONATE)
+        if len(_filter_sessions) > 20:
+            _filter_sessions.clear()
+        _filter_sessions[key] = sess
+        if page == 1 and last is not None and last.status_code == 200:
+            return parse_catalog(last.text)  # відповідь на фільтр — це вже перша сторінка
+    r = sess.get(catalog_url(path, page), headers=HEADERS, timeout=20, **IMPERSONATE)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}: {path}")
+    return parse_catalog(r.text)
+
+
 ITEM_PATH_RE = re.compile(r"^/(serials|films|film|cartoons|anime|dorama)/[^/]+/?$")
 TITLE_ATTR_RE = re.compile(r"^\s*(Смотреть|Дивитись|Дивитися)\s+(.*?)\s+онлайн\s*$", re.I)
 

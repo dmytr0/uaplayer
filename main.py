@@ -213,7 +213,16 @@ def main(page: ft.Page, reopen=None):
         fg = "#FFFFFF" if on_dark else TEXT
 
         def minimize(e):
-            page.window.minimized = True
+            quiet()
+            w = page.window
+            if w.full_screen or st.get("fullscreen"):
+                # з повного екрана Windows вікно не згортає — спершу вийти з нього
+                if st.get("win_fullscreen"):
+                    st["win_fullscreen"](False)
+                else:
+                    w.full_screen = False
+                    page.update()
+            w.minimized = True
             page.update()
 
         def maximize(e):
@@ -391,7 +400,9 @@ def main(page: ft.Page, reopen=None):
                 "layout": "list" if TV else "grid",
                 # останній вибір субтитрів (мова або ""): окремо для оригінальних доріжок
                 # і для українських (там субтитри — лише написи на екрані)
-                "sub_orig": "", "sub_ua": ""}
+                "sub_orig": "", "sub_ua": "",
+                # пропускати заставку UAFLIX (16 с на початку відео з «uaflix» у назві файлу)
+                "skip_intro": True}
 
     # Історія переглядів: [{url, title, orig, poster, age, season, label, si, ei, voice,
     # pos, dur, ts}] — найновіше першим. Позиція (pos) і тривалість (dur) — у мілісекундах.
@@ -1264,6 +1275,181 @@ def main(page: ft.Page, reopen=None):
                              padding=ft.Padding.only(left=14 if is_mobile else 24, right=14,
                                                      top=10, bottom=2))
 
+    # ── фільтри розділу (сортування, жанр, рік, країна, студія — із самого сайту)
+    filter_row = ft.Row(spacing=8, scroll=None if TV else ft.ScrollMode.HIDDEN, wrap=TV,
+                        run_spacing=8)
+    filter_bar = ft.Container(filter_row, visible=False,
+                              padding=ft.Padding.only(left=14 if is_mobile else 24, right=14,
+                                                      top=8, bottom=2))
+
+    def filter_button(label, active, on_click, icon=ft.Icons.ARROW_DROP_DOWN_ROUNDED):
+        return ft.OutlinedButton(
+            label, icon=icon, on_click=on_click,
+            style=ft.ButtonStyle(
+                color={ft.ControlState.FOCUSED: TV_FOCUS_FG if TV else ACCENT,
+                       ft.ControlState.DEFAULT: ACCENT if active else TEXT},
+                icon_color={ft.ControlState.DEFAULT: ACCENT if active else MUTED},
+                bgcolor={ft.ControlState.FOCUSED: TV_FOCUS_BG if TV else SURFACE_2,
+                         ft.ControlState.DEFAULT: ft.Colors.with_opacity(0.1, ACCENT)
+                         if active else SURFACE_2},
+                side={ft.ControlState.FOCUSED: ft.BorderSide(2 if TV else 1, "#FFFFFF" if TV
+                                                             else ACCENT),
+                      ft.ControlState.DEFAULT: ft.BorderSide(1, ft.Colors.with_opacity(0.4, ACCENT)
+                                                             if active else BORDER)},
+                shape=ft.RoundedRectangleBorder(radius=10),
+                padding=ft.Padding.symmetric(horizontal=12, vertical=8 if TV else 4)))
+
+    COLLECTIONS = ("Про кохання", "Для підлітків", "Про підлітків", "Про школу")
+
+    def collection_items():
+        """Тематичні добірки поточного розділу (їх немає серед жанрів фільтра):
+        [(назва, шлях, чи відкрита зараз)], плюс «Без добірки», якщо добірку вже відкрито."""
+        path = st["mode"][1] if st["mode"][0] == "cat" else None
+        root = genre_root(path) if path else None
+        if not root:
+            return []
+        items = [(n, g, g == path) for n, g in GENRES[root][1] if n in COLLECTIONS]
+        if any(on for _, _, on in items):
+            items.insert(0, ("Без добірки", root, False))
+        return items
+
+    def open_collection(path):
+        quiet()
+        if TV:
+            page.pop_dialog()
+        page.run_task(open_category, chip_heading(path), path)
+
+    def filter_menu(d, text, cur):
+        active = cur is not None
+
+        def pick(v):
+            def handler(e):
+                quiet()
+                set_filter(d["field"], v)
+            return handler
+
+        opts = [("", "За замовчуванням" if d["field"] == "default" else "Будь-який")] + d["options"]
+        return ft.PopupMenuButton(
+            content=ft.Container(
+                ft.Row([ft.Text(text, size=13, color=ACCENT if active else TEXT,
+                                weight=ft.FontWeight.W_600),
+                        ft.Icon(ft.Icons.ARROW_DROP_DOWN_ROUNDED, size=18,
+                                color=ACCENT if active else MUTED)], spacing=2, tight=True),
+                padding=ft.Padding.only(left=12, right=6, top=6, bottom=6), border_radius=10,
+                bgcolor=ft.Colors.with_opacity(0.1, ACCENT) if active else SURFACE_2,
+                border=ft.Border.all(1, ft.Colors.with_opacity(0.4, ACCENT) if active else BORDER)),
+            items=[ft.PopupMenuItem(
+                content=ft.Row([ft.Icon(ft.Icons.CHECK_ROUNDED, size=16,
+                                        color=ACCENT if (v or None) == cur else ft.Colors.TRANSPARENT),
+                                ft.Text(t, color=TEXT)], spacing=10),
+                on_click=pick(v)) for v, t in opts] + (
+                [ft.PopupMenuItem()] + [ft.PopupMenuItem(
+                    content=ft.Row([ft.Icon(ft.Icons.CHECK_ROUNDED if on else
+                                            ft.Icons.COLLECTIONS_BOOKMARK_OUTLINED, size=16,
+                                            color=ACCENT if on else MUTED),
+                                    ft.Text(f"Добірка: {n}" if n != "Без добірки" else n,
+                                            color=TEXT)], spacing=10),
+                    on_click=lambda e, g=g: open_collection(g))
+                    for n, g, on in collection_items()]
+                if d["field"] == "janr" and collection_items() else []),
+            tooltip="", bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=12),
+            menu_position=ft.PopupMenuPosition.UNDER)
+
+    def render_filters():
+        defs, cur = st.get("filter_defs") or [], st.get("filters") or {}
+        btns = []
+        for d in defs:
+            val = cur.get(d["field"])
+            label = next((t for v, t in d["options"] if v == val), None)
+            text = f"{d['title']}: {label}" if label else d["title"]
+            if TV:  # з пульта зручніше вікно по центру
+                # quiet: без автооновлення всієї сторінки після кліку — від нього блимав екран
+                btn = filter_button(text, bool(label), lambda e, d=d: (quiet(), open_filter(d)))
+                st.setdefault("filter_btns", {})[d["field"]] = btn
+                btns.append(btn)
+            else:  # випадний список під кнопкою — без затемнення екрана (воно виглядало як
+                #     блимання)
+                btns.append(filter_menu(d, text, val))
+        if cur:
+            btns.append(filter_button("Скинути", False,
+                                      lambda e: (quiet(), set_filter(None, None)),
+                                      icon=ft.Icons.CLOSE_ROUNDED))
+        filter_row.controls = btns
+        filter_bar.visible = bool(defs)
+
+    def set_filter(field, value):
+        if field is None:
+            st["filters"] = {}
+        elif value:
+            st["filters"][field] = value
+        else:
+            st["filters"].pop(field, None)
+        render_filters()
+        try:
+            filter_bar.update()
+        except Exception:
+            pass
+        if TV:  # кнопки створено заново — фокус назад на щойно змінений фільтр
+            btn = (st.get("filter_btns") or {}).get(field) if field else None
+            target = btn or (filter_row.controls[0] if filter_row.controls else None)
+            if target is not None:
+                page.run_task(focus_later, target)
+        page.run_task(reload, True)
+
+    def open_filter(d):
+        cur = (st.get("filters") or {}).get(d["field"])
+
+        def pick(v):
+            def handler(e):
+                quiet()
+                page.pop_dialog()
+                set_filter(d["field"], v)
+            return handler
+
+        opts = [("", "За замовчуванням" if d["field"] == "default" else "Будь-який")] + d["options"]
+        buttons = [ft.FilledButton(t, icon=ft.Icons.CHECK_ROUNDED if (v or None) == cur else None,
+                                   autofocus=(v or None) == cur, on_click=pick(v), width=300,
+                                   style=ft.ButtonStyle(
+                                       bgcolor={ft.ControlState.FOCUSED: TV_FOCUS_BG,
+                                                ft.ControlState.DEFAULT: SURFACE_2},
+                                       side=TV_FOCUS_SIDE, color=TV_FOCUS_TEXT,
+                                       icon_color=TV_FOCUS_TEXT,
+                                       shape=ft.RoundedRectangleBorder(radius=10)))
+                   for v, t in opts]
+        if d["field"] == "janr":  # тематичні добірки — у тому ж вікні
+            buttons += [ft.FilledButton(f"Добірка: {n}" if n != "Без добірки" else n,
+                                        icon=ft.Icons.CHECK_ROUNDED if on else None, width=300,
+                                        on_click=lambda e, g=g: open_collection(g),
+                                        style=ft.ButtonStyle(
+                                            bgcolor={ft.ControlState.FOCUSED: TV_FOCUS_BG,
+                                                     ft.ControlState.DEFAULT: SURFACE_3},
+                                            side=TV_FOCUS_SIDE, color=TV_FOCUS_TEXT,
+                                            icon_color=TV_FOCUS_TEXT,
+                                            shape=ft.RoundedRectangleBorder(radius=10)))
+                        for n, g, on in collection_items()]
+        many = len(buttons) > 7
+        show_dialog(ft.AlertDialog(
+            title=ft.Text(d["title"], size=20, weight=ft.FontWeight.W_800, color=TEXT),
+            bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
+            content=ft.Column(buttons, spacing=8, tight=True,
+                              scroll=ft.ScrollMode.AUTO if many else None,
+                              height=min(len(buttons) * 48, (page.height or 700) - 220)
+                              if many else None)))
+
+    async def load_filters(path):
+        try:
+            defs = await asyncio.to_thread(core.section_filters, path)
+        except Exception:
+            defs = []
+        if st.get("filters_for") != path:
+            return  # уже інший розділ
+        st["filter_defs"] = defs
+        render_filters()
+        try:
+            filter_bar.update()
+        except Exception:
+            pass
+
     def genre_chip(label, path, selected):
         return ft.FilledButton(
             label, on_click=lambda e: page.run_task(open_category, chip_heading(path), path),
@@ -1289,7 +1475,9 @@ def main(page: ft.Page, reopen=None):
     def refresh_genre_bar():
         path = st["mode"][1] if st["mode"][0] == "cat" else None
         root = genre_root(path) if path else None
-        genre_bar.visible = bool(root)
+        # рядок жанрів прибрано: жанр — у фільтрі «Жанр», а тематичні добірки (про кохання,
+        # підлітків, школу) — у тому ж списку окремим блоком (див. collection_items)
+        genre_bar.visible = False
         if root:
             genre_row.controls = [genre_chip("Усі", root, path == root)] + [
                 genre_chip(n, g, path == g) for n, g in GENRES[root][1]]
@@ -1951,11 +2139,25 @@ def main(page: ft.Page, reopen=None):
         kind, val = st["mode"]
         if kind == "cat" and val == FAV_PATH:
             return active_favorites() if page_no == 1 else []
+        if kind == "cat" and st.get("filters"):
+            filters = dict(st["filters"])
+            return await asyncio.to_thread(core.catalog_filtered, val, page_no, filters)
         url = core.catalog_url(val, page_no) if kind == "cat" else core.search_url(val, page_no)
         return await asyncio.to_thread(lambda: core.parse_catalog(core.fetch(url)))
 
-    async def reload():
+    async def reload(soft=False):
+        """soft — зміна фільтра: старі картки лишаються, поки вантажаться нові (без заглушок,
+        які виглядали як блимання)."""
         refresh_genre_bar()
+        kind_, val_ = st["mode"]
+        if kind_ == "cat" and val_ != FAV_PATH:
+            if st.get("filters_for") != val_:  # інший розділ — фільтри з нуля
+                st["filters_for"], st["filters"], st["filter_defs"] = val_, {}, []
+                render_filters()
+                page.run_task(load_filters, val_)
+        else:
+            st["filters_for"], st["filters"], st["filter_defs"] = None, {}, []
+            render_filters()
         if st["mode"][0] == "home":
             go_home()
             return
@@ -1965,10 +2167,19 @@ def main(page: ft.Page, reopen=None):
             st["tv_layout"].visible = True
         st["gen"] += 1
         gen = st["gen"]
+        had_items = bool(st["items"])
         st.update(page=1, items=[], has_more=True, loading=True)
         set_subheading("Завантаження…")
-        body.content = skeleton()
-        page.update()
+        if soft and had_items:
+            set_more_loading(True)
+            try:
+                more_loader.update()
+                subheading.update()
+            except Exception:
+                pass
+        else:
+            body.content = skeleton()
+            page.update()
         try:
             items = await fetch_page(1)
         except Exception as ex:
@@ -1997,6 +2208,7 @@ def main(page: ft.Page, reopen=None):
                                        "Спробуйте інший запит або розділ")
             page.update()
             return
+        set_more_loading(False)
         cards = render(items)
         show_items()
         page.update()
@@ -2549,6 +2761,8 @@ def main(page: ft.Page, reopen=None):
     def go_home():
         st["mode"] = ("home", None)
         refresh_genre_bar()
+        st["filters_for"], st["filters"], st["filter_defs"] = None, {}, []
+        render_filters()  # на головній фільтрів немає
         st["gen"] += 1
         drawer.selected_index = st["nav_index"] = 0
         mark_nav()
@@ -2609,8 +2823,8 @@ def main(page: ft.Page, reopen=None):
 
     home = ft.View(
         route="/", padding=0, bgcolor=BG, drawer=drawer,
-        controls=[safe(ft.Column([top_bar_box, recent_bar, genre_bar, home_body], expand=True,
-                                 spacing=0))],
+        controls=[safe(ft.Column([top_bar_box, recent_bar, genre_bar, filter_bar, home_body],
+                                 expand=True, spacing=0))],
     )
 
     # «Назад» на головному екрані Android (телефон і TV): з пошуку чи розділу — на головну,
@@ -3076,6 +3290,9 @@ def main(page: ft.Page, reopen=None):
                 row(ft.Icons.ASPECT_RATIO_ROUNDED, "Масштаб на весь екран",
                     "Авто: на телефоні — заповнити, на комп'ютері — вписати",
                     trailing=choice("fit", fit_options)),
+                row(ft.Icons.FAST_FORWARD_ROUNDED, "Пропускати заставку UAFLIX",
+                    "Відео починається одразу з фільму чи серії (заставка — 16 с)",
+                    trailing=switch("skip_intro")),
             ])],
             "history": lambda: [section("Історія переглядів", [
                 row(ft.Icons.HISTORY_ROUNDED, "Запам'ятовувати, де зупинились",
@@ -3156,6 +3373,101 @@ def main(page: ft.Page, reopen=None):
             await focus_later(tv_focus_first[0])
 
     # ═════════════════════ сторінка тайтлу ═════════════════════
+    # ── актори з фото (TMDB): ряд на сторінці тайтлу й картка актора з відомими роботами
+    def _latin_or_cyr(name):
+        return bool(re.search(r"[A-Za-zА-Яа-яІіЇїЄєҐґ]", name or ""))
+
+    async def load_cast(item, info, cast_text, row):
+        try:
+            people = await asyncio.to_thread(
+                tmdb.cast, item["url"], info.get("title") or item.get("title", ""),
+                info.get("orig") or item.get("orig", ""), info.get("year", ""))
+        except Exception:
+            return
+        if not people:
+            return
+        site = info.get("actors") or []
+        for i, a in enumerate(people):  # ім'я корейською/японською — краще як на сайті
+            if not _latin_or_cyr(a["name"]) and i < len(site):
+                a["name"] = site[i]
+        row.controls = [actor_tile(a) for a in people]
+        row.visible, cast_text.visible = True, False
+        try:
+            row.update()
+            cast_text.update()
+        except Exception:
+            pass
+
+    def actor_tile(a):
+        photo = (ft.Image(src=a["photo"], width=72, height=72, fit=ft.BoxFit.COVER,
+                          border_radius=36, gapless_playback=True)
+                 if a["photo"] else
+                 ft.Container(ft.Icon(ft.Icons.PERSON_ROUNDED, color=MUTED, size=34),
+                              width=72, height=72, border_radius=36, bgcolor=SURFACE_2,
+                              alignment=ft.Alignment.CENTER))
+        body = ft.Container(
+            ft.Column([photo,
+                       ft.Text(a["name"], size=12, weight=ft.FontWeight.W_600, color=TEXT,
+                               max_lines=2, text_align=ft.TextAlign.CENTER, width=92),
+                       ft.Text(a["character"], size=11, color=MUTED, max_lines=1,
+                               overflow=ft.TextOverflow.ELLIPSIS, text_align=ft.TextAlign.CENTER,
+                               width=92)],
+                      spacing=4, horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True),
+            width=96, padding=ft.Padding.symmetric(vertical=6))
+        open_ = lambda e, a=a: page.run_task(open_actor, a)  # noqa: E731
+        if TV:  # пультом — лише кнопка отримує фокус (з білою рамкою)
+            return focusable(body, open_, radius=12)
+        return ft.Container(body, border_radius=12, ink=True, on_click=open_)
+
+    async def open_actor(a):
+        """Картка актора: фото, коротко про нього й відомі роботи (натиснути — знайти на сайті)."""
+        try:
+            pers = await asyncio.to_thread(tmdb.person, a["id"])
+        except Exception:
+            toast("Не вдалося завантажити дані про актора", ft.Icons.ERROR_OUTLINE_ROUNDED)
+            return
+        name = a["name"] if not _latin_or_cyr(pers["name"]) else pers["name"]
+
+        def work_card(w):
+            img = (ft.Image(src=w["poster"], width=110, height=165, fit=ft.BoxFit.COVER,
+                            border_radius=10) if w["poster"] else
+                   ft.Container(width=110, height=165, border_radius=10, bgcolor=SURFACE_2))
+            body = ft.Column([img, ft.Text(w["title"], size=12, color=TEXT, max_lines=2,
+                                           width=110, weight=ft.FontWeight.W_600),
+                              ft.Text(w["year"], size=11, color=MUTED)], spacing=4, tight=True)
+            go = lambda e, w=w: search_title(w["title"] or w["orig"])  # noqa: E731
+            if TV:
+                return focusable(body, go, radius=10)
+            return ft.Container(body, width=110, border_radius=10, ink=True, on_click=go)
+
+        photo = (ft.Image(src=pers["photo"] or a["photo"], width=110, height=150,
+                          fit=ft.BoxFit.COVER, border_radius=12)
+                 if (pers["photo"] or a["photo"]) else ft.Container())
+        show_dialog(ft.AlertDialog(
+            bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
+            content=ft.Column([
+                ft.Row([photo, ft.Column([
+                    ft.Text(name, size=20, weight=ft.FontWeight.W_800, color=TEXT),
+                    ft.Text(pers["bio"] or "Біографії немає", size=13, color=MUTED,
+                            max_lines=7, overflow=ft.TextOverflow.ELLIPSIS),
+                ], spacing=6, expand=True)], spacing=16,
+                    vertical_alignment=ft.CrossAxisAlignment.START),
+                ft.Text("Відомі роботи — натисніть, щоб знайти на сайті", size=13, color=MUTED),
+                ft.Row([work_card(w) for w in pers["works"]], spacing=12,
+                       scroll=ft.ScrollMode.AUTO),
+            ], tight=True, spacing=14, width=min(640, (page.width or 700) - 60)),
+            actions=[ft.TextButton("Закрити", on_click=lambda e: page.pop_dialog(),
+                                   style=ft.ButtonStyle(color=MUTED))]))
+
+    def search_title(q):
+        """Знайти тайтл на сайті: закрити вікно, повернутись на головну й шукати."""
+        page.pop_dialog()
+        while len(page.views) > 1 and page.views[-1].route != "/play":
+            pop_view()
+        search.value = q
+        clear_btn.visible = True
+        page.run_task(do_search, q)
+
     async def open_title(item, autoplay=False, resume=False):
         ctx = {"item": item, "info": None, "seasons": [], "season": 0}
 
@@ -3212,6 +3524,8 @@ def main(page: ft.Page, reopen=None):
 
         more_btn.on_click = toggle_desc
         cast = ft.Text("", size=12, color=MUTED, visible=False)
+        # актори з фото (TMDB) — замість рядка «У ролях», коли знайдуться
+        cast_row = ft.Row([], spacing=14, scroll=ft.ScrollMode.HIDDEN, visible=False)
 
         # поки шукаємо відео (буває довго) — на кнопці видно, що треба зачекати
         # головна дія — оранжева: «Дивитись», якщо ще не дивились, інакше «Продовжити»
@@ -3338,7 +3652,7 @@ def main(page: ft.Page, reopen=None):
             # опинялися внизу екрана й ховалися, коли сторінка прокручувалась угору
             *([] if TV else [actions_row]),
             ft.Container(height=4),
-            cast,
+            cast, cast_row,
         ], spacing=6), padding=ft.Padding.only(top=8)))
 
         hero = ft.ResponsiveRow([
@@ -3459,6 +3773,7 @@ def main(page: ft.Page, reopen=None):
         if info["actors"]:
             cast.value = "У ролях: " + ", ".join(info["actors"])
             cast.visible = True
+        page.run_task(load_cast, item, info, cast, cast_row)
         if info["trailer"]:
             trailer_btn.visible = True
             trailer_btn.on_click = lambda e: page.run_task(ft.UrlLauncher().launch_url, info["trailer"])
@@ -3755,8 +4070,7 @@ def main(page: ft.Page, reopen=None):
         guard_back(view, player_back)
         page.views.append(view)
         cover_views()
-        set_pip(True)
-        page.update()
+        page.update()  # плаваюче вікно дозволяє pip_watch — лише поки відео грає
 
     def build_player(view, ctx, show, queue, voice, start_pos=None, sub_pref=None, before=()):
         """Плеєр для черги серій у вибраній озвучці; sub_pref — мова увімкнених субтитрів
@@ -3977,7 +4291,12 @@ def main(page: ft.Page, reopen=None):
                                   height=min((len(buttons) + 1) // 2 * 54 + 4,
                                              max(120, (page.height or 400) - 150)))
             else:
-                body_ = ft.Column(buttons, tight=True, spacing=10, scroll=ft.ScrollMode.AUTO)
+                # без прокрутки: прокручувана колонка у вікні розтягувала його на весь
+                # екран (телефон вертикально); прокрутка — лише для довгих списків
+                body_ = ft.Column(buttons, tight=True, spacing=10,
+                                  scroll=ft.ScrollMode.AUTO if len(buttons) > 7 else None,
+                                  height=min(len(buttons) * 72, (page.height or 800) - 200)
+                                  if len(buttons) > 7 else None)
             show_dialog(ft.AlertDialog(
                 on_dismiss=dismissed,
                 title=ft.Text(title, size=18 if compact else 22, weight=ft.FontWeight.W_800,
@@ -4302,7 +4621,7 @@ def main(page: ft.Page, reopen=None):
                                      on_click=lambda e: page.run_task(cast_do, action))
 
             cast_ui.update(pos=pos_text, bar=bar, toggle=toggle)
-            show_dialog(ft.AlertDialog(
+            p["cast_dlg"] = cast_dlg = ft.AlertDialog(
                 title=ft.Row([ft.Icon(ft.Icons.CAST_CONNECTED_ROUNDED, color=ACCENT),
                               ft.Text(sess.name, weight=ft.FontWeight.W_800, expand=True,
                                       max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)], spacing=10),
@@ -4322,7 +4641,8 @@ def main(page: ft.Page, reopen=None):
                                          style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF",
                                                               icon_color="#FFFFFF"))],
                 on_dismiss=lambda e: cast_ui.clear(),
-            ))
+            )
+            show_dialog(cast_dlg)
             render_cast_state()
 
         def render_cast_state():
@@ -4383,15 +4703,20 @@ def main(page: ft.Page, reopen=None):
             if not sess:
                 return
             pos = p.get("cast_state", (0,))[0]
+            # вікно керування — закрити одразу (раніше закривалось лише після відповіді
+            # телевізора й лише якщо посилання на його елементи ще не очистились — тоді
+            # лишалось на екрані, поки застосунок не згорнеш)
+            cast_ui.clear()
+            dlg = p.pop("cast_dlg", None)
+            if dlg is not None and dlg.open:
+                dlg.open = False
+                try:
+                    dlg.update()
+                except Exception:
+                    pass
             if quit_tv:
                 try:
                     await asyncio.to_thread(sess.stop)
-                except Exception:
-                    pass
-            if cast_ui:
-                cast_ui.clear()
-                try:
-                    page.pop_dialog()
                 except Exception:
                     pass
             if not alive():
@@ -4494,6 +4819,11 @@ def main(page: ft.Page, reopen=None):
             if on and not w.full_screen:
                 # розмір вікна до повного екрана — до нього повертається міні-плеєр
                 st["pre_fs"] = dict(width=w.width, height=w.height, left=w.left, top=w.top)
+                if is_win and w.maximized:
+                    # розгорнуте вікно без рамки вже на весь екран: повний екран поверх нього
+                    # нічого не міняв на око, а згорнути вікно після цього Windows не давала
+                    w.maximized = False
+                    page.update()
             page.window.full_screen = on
             fs_btn.icon = ft.Icons.FULLSCREEN_EXIT_ROUNDED if on else ft.Icons.FULLSCREEN_ROUNDED
             fs_btn.tooltip = "Вийти з повного екрана" if on else "На весь екран"
@@ -4794,6 +5124,8 @@ def main(page: ft.Page, reopen=None):
                     # перейшли на наступну серію — попередня переглянута, навіть якщо титри
                     # не додивились
                     mark_watched(ctx, queue[prev_idx][1])
+                if idx != prev_idx and not p["restoring"]:
+                    skip_intro(idx)  # нова серія — теж без заставки
                 if idx > prev_idx and (p.get("stop_after") == prev_idx
                                        or p.get("sleep_after") == prev_idx):
                     # «Скасувати» наступну серію / таймер сну «після цієї серії» — наступна
@@ -4936,6 +5268,17 @@ def main(page: ft.Page, reopen=None):
 
         sleep_options()
         page.run_task(end_watch)
+
+        INTRO = 16_000  # заставка UAFLIX: 16 с (однакова в усіх відео з «uaflix» у назві)
+
+        def skip_intro(idx):
+            """Почати серію одразу після заставки UAFLIX — якщо вона там є й це увімкнено."""
+            if not settings["skip_intro"] or not (0 <= idx < len(entries)):
+                return
+            if "uaflix" not in entries[idx]["url"].lower():
+                return  # інші джерела (Hurtom, студії…) заставки не мають
+            p["target"], p["restoring"] = ft.Duration(milliseconds=INTRO), True
+            page.run_task(restore_position)
 
         async def restore_position():
             """Перемотати на збережену позицію (зміна озвучки, «Продовжити перегляд»).
@@ -5121,6 +5464,8 @@ def main(page: ft.Page, reopen=None):
         page.run_task(track_progress)
         if start_pos and start_pos.in_milliseconds > 3000:
             page.run_task(restore_position)
+        else:
+            skip_intro(0)
         if len(entries) < len(queue):
             page.run_task(extend_playlist)
         if TV:
@@ -5466,6 +5811,22 @@ def main(page: ft.Page, reopen=None):
         # (без повернення в повний екран — плеєр закривається, звідти виходимо й так)
         st["mini_restore"] = lambda: page.run_task(toggle_mini, False) if mini["on"] else None
         page.run_task(hide_bar_later, 0)
+
+        async def pip_watch():
+            """Телефон: плаваюче вікно при згортанні — лише якщо відео грає (на паузі — ні)."""
+            last = None
+            while alive():
+                try:
+                    playing = bool(await video.is_playing())
+                except Exception:
+                    playing = last
+                if playing is not None and playing != last:
+                    set_pip(playing)
+                    last = playing
+                await asyncio.sleep(1)
+
+        if is_mobile and is_android:
+            page.run_task(pip_watch)
         return ft.GestureDetector(
             player_stack := ft.Stack(
                 [video, mini_drag, bar_box, hud, next_card, peek_cover], expand=True, scale=1,

@@ -27,6 +27,7 @@ IMG = "https://image.tmdb.org/t/p/"
 _session = requests.Session()
 _lock = threading.Lock()
 _cache = None  # url сторінки на сайті → шлях кадру в TMDB ("" — не знайдено)
+_ids = {}  # url сторінки → (kind, id) у TMDB (у тому ж файлі під ключем "__ids__")
 
 
 def enabled():
@@ -46,13 +47,14 @@ def _load():
                 _cache = json.load(f)
         except Exception:
             _cache = {}
+        _ids.update({k: tuple(v) for k, v in _cache.pop("__ids__", {}).items()})
     return _cache
 
 
 def _save():
     try:
         with open(_cache_file(), "w", encoding="utf-8") as f:
-            json.dump(_cache, f, ensure_ascii=False)
+            json.dump(dict(_cache, __ids__=_ids), f, ensure_ascii=False)
     except Exception:
         pass
 
@@ -134,6 +136,7 @@ def backdrop(url, title, orig="", year="", size="w1280"):
                         break
             if hit:
                 path = _best_backdrop(kind, hit["id"], hit.get("backdrop_path"))
+                _ids[url] = (kind, hit["id"])
                 break
     except Exception:
         return None  # мережа/ліміт — не запам'ятовуємо, спробуємо наступного разу
@@ -141,3 +144,71 @@ def backdrop(url, title, orig="", year="", size="w1280"):
         _cache[url] = path
         _save()
     return IMG + size + path if path else None
+
+
+# ───────── актори ─────────
+
+def _find(url, title, orig, year):
+    """(kind, id) тайтлу в TMDB — із запам'ятованого або пошуком."""
+    with _lock:
+        _load()
+        if url in _ids:
+            return _ids[url]
+    for kind in (("movie", "tv") if "/films/" in url else ("tv", "movie")):
+        for q in (title, orig):
+            if q:
+                hit = _search(kind, q, str(year or "")[:4])
+                if hit:
+                    with _lock:
+                        _ids[url] = (kind, hit["id"])
+                        _save()
+                    return kind, hit["id"]
+    return None
+
+
+def cast(url, title, orig="", year="", limit=15):
+    """Актори тайтлу: [{id, name, character, photo}] (імена — українською, якщо є)."""
+    if not TMDB_TOKEN:
+        return []
+    found = _find(url, title, orig, year)
+    if not found:
+        return []
+    kind, tid = found
+    path = f"/{kind}/{tid}/aggregate_credits" if kind == "tv" else f"/{kind}/{tid}/credits"
+    data = _get(path, language="uk-UA")
+    out = []
+    for c in data.get("cast", [])[:limit]:
+        role = c.get("character") or ", ".join(
+            r.get("character", "") for r in c.get("roles", [])[:1])
+        out.append({"id": c["id"], "name": c.get("name") or "", "character": role or "",
+                    "photo": IMG + "w185" + c["profile_path"] if c.get("profile_path") else None})
+    return out
+
+
+def person(pid):
+    """Актор: {name, photo, bio, works: [{title, orig, year, poster, kind}]} — відомі роботи."""
+    d = _get(f"/person/{pid}", language="uk-UA", append_to_response="combined_credits")
+    bio = d.get("biography") or ""
+    if not bio:
+        try:
+            bio = _get(f"/person/{pid}", language="en-US").get("biography") or ""
+        except Exception:
+            pass
+    seen, works = set(), []
+    credits = sorted(d.get("combined_credits", {}).get("cast", []),
+                     key=lambda c: c.get("vote_count") or 0, reverse=True)
+    for c in credits:
+        key = (c.get("media_type"), c.get("id"))
+        if key in seen or c.get("media_type") not in ("movie", "tv"):
+            continue
+        seen.add(key)
+        date = c.get("release_date") or c.get("first_air_date") or ""
+        works.append({"title": c.get("title") or c.get("name") or "",
+                      "orig": c.get("original_title") or c.get("original_name") or "",
+                      "year": date[:4], "kind": c["media_type"],
+                      "poster": IMG + "w342" + c["poster_path"] if c.get("poster_path") else None})
+        if len(works) >= 24:
+            break
+    return {"name": d.get("name") or "", "bio": bio,
+            "photo": IMG + "w342" + d["profile_path"] if d.get("profile_path") else None,
+            "works": works}
