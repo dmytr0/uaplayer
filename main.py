@@ -20,6 +20,7 @@ import flet as ft
 import flet_video as fv
 
 import appearance
+import airplay
 import cast as uafix_cast
 import core
 import dlna
@@ -702,6 +703,12 @@ def main(page: ft.Page, reopen=None):
                 toast("Не вдалося перевірити оновлення", ft.Icons.ERROR_OUTLINE_ROUNDED)
             return
         await prefs.set("update_checked_at", now)
+        st["update_rel"] = rel if updater.is_newer(rel["version"]) else None
+        fill_bell()
+        try:
+            bell.update()
+        except Exception:
+            pass
         if updater.is_newer(rel["version"]) and (
                 manual or rel["version"] != settings.get("skipped_version")):
             show_update_dialog(rel)
@@ -718,6 +725,7 @@ def main(page: ft.Page, reopen=None):
         await load_settings()
         page.run_task(sync_loop)
         page.run_task(check_fav_new)  # нові серії серіалів з Обраного
+        page.run_task(bell_loop, RUN["gen"])  # і після зміни теми (дзвіночок — новий)
         if not first:
             return  # перебудова після зміни теми — решта вже зроблена при запуску
         updater.mark_started()  # для скрипта оновлення: нова версія запустилась
@@ -1446,6 +1454,62 @@ def main(page: ft.Page, reopen=None):
         if TV and st.get("return_focus"):  # фокус — на плитку, з якої відкрили розділ
             page.run_task(focus_later, st["return_focus"])
 
+    # ПК: дзвіночок біля пошуку — помаранчева крапка, коли вийшла нова версія; у меню —
+    # «Оновити до …» і «Перевірити оновлення»
+    bell_dot = ft.Container(width=9, height=9, border_radius=5, bgcolor=ACCENT,
+                            border=ft.Border.all(1.5, BG), right=7, top=7, visible=False)
+    bell = ft.PopupMenuButton(
+        content=ft.Stack([ft.Container(ft.Icon(ft.Icons.NOTIFICATIONS_NONE_ROUNDED, color=TEXT,
+                                               size=22),
+                                       width=40, height=40, alignment=ft.Alignment.CENTER),
+                          bell_dot], width=40, height=40),
+        tooltip="Сповіщення", bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=12),
+        menu_position=ft.PopupMenuPosition.UNDER, visible=is_desktop and not TV)
+
+    def fill_bell():
+        rel = st.get("update_rel")
+        items = []
+        if rel:
+            items.append(ft.PopupMenuItem(
+                content=ft.Row([ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED, color=ACCENT, size=20),
+                                ft.Column([ft.Text(f"Доступна версія {rel['version']}",
+                                                   color=TEXT, weight=ft.FontWeight.W_700),
+                                           ft.Text("Натисніть, щоб оновити", color=MUTED, size=12)],
+                                          spacing=0, tight=True)], spacing=12),
+                on_click=lambda e: show_update_dialog(rel)))
+        else:
+            items.append(ft.PopupMenuItem(
+                content=ft.Text("Нових сповіщень немає", color=MUTED), disabled=True))
+        items.append(ft.PopupMenuItem(
+            content=ft.Row([ft.Icon(ft.Icons.REFRESH_ROUNDED, color=MUTED, size=18),
+                            ft.Text("Перевірити оновлення", color=TEXT)], spacing=12),
+            on_click=lambda e: page.run_task(check_updates, True)))
+        bell.items = items
+        bell_dot.visible = bool(rel)
+
+    async def refresh_bell():
+        """Тихо дізнатись, чи вийшла нова версія (для крапки на дзвіночку) — без вікон."""
+        if not bell.visible or updater.VERSION == "dev":
+            fill_bell()
+            return
+        try:
+            rel = await asyncio.to_thread(updater.latest_release)
+        except Exception:
+            return
+        st["update_rel"] = rel if updater.is_newer(rel["version"], updater.VERSION) else None
+        fill_bell()
+        try:
+            bell.update()
+        except Exception:
+            pass
+
+    async def bell_loop(gen):
+        while RUN["gen"] == gen:
+            await refresh_bell()
+            await asyncio.sleep(3 * 3600)
+
+    fill_bell()
+
     # ПК: «←» біля назви розділу — назад на головну одним кліком (видно лише не на головній)
     cat_back = ft.IconButton(ft.Icons.ARROW_BACK_ROUNDED, icon_color=TEXT, tooltip="На головну",
                              visible=False, on_click=lambda e: back_home())
@@ -1536,7 +1600,7 @@ def main(page: ft.Page, reopen=None):
         top_bar = ft.Row([menu_btn, title_block, tv_layout, search_btn], spacing=12,
                          vertical_alignment=ft.CrossAxisAlignment.CENTER)
     else:
-        top_bar = ft.Row([menu_btn, cat_back, title_block, search, layout_toggle,
+        top_bar = ft.Row([menu_btn, cat_back, title_block, bell, search, layout_toggle,
                           *win_buttons()],
                          spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER)
     top_bar_box = drag_area(ft.Container(
@@ -3884,23 +3948,42 @@ def main(page: ft.Page, reopen=None):
                 p["dialog"] = False
                 p["dialog_closed"] = time.monotonic()
 
+            # телефон горизонтально (низький екран): кнопки нижчі й у дві колонки, а якщо
+            # і так не вміщається — вікно прокручується
+            compact = (page.height or 800) < 560
+            buttons = [
+                ft.FilledButton(
+                    text, icon=ft.Icons.CHECK_ROUNDED if checked else None, autofocus=checked,
+                    on_click=pick(action), width=250 if compact else 380,
+                    style=ft.ButtonStyle(
+                        bgcolor={ft.ControlState.FOCUSED: TV_FOCUS_BG,
+                                 ft.ControlState.DEFAULT: SURFACE_2},
+                        side=TV_FOCUS_SIDE,
+                        color=TV_FOCUS_TEXT, icon_color=TV_FOCUS_TEXT,
+                        padding=ft.Padding.symmetric(horizontal=16 if compact else 20,
+                                                     vertical=10 if compact else 18),
+                        shape=ft.RoundedRectangleBorder(radius=12),
+                        text_style=ft.TextStyle(size=15 if compact else 17,
+                                                weight=ft.FontWeight.W_600)))
+                for text, checked, action in options]
+            if compact:
+                body_ = ft.Column([ft.Row(buttons, wrap=True, spacing=10, run_spacing=10,
+                                          width=510)],
+                                  tight=True, scroll=ft.ScrollMode.AUTO,
+                                  height=min((len(buttons) + 1) // 2 * 54 + 4,
+                                             max(120, (page.height or 400) - 150)))
+            else:
+                body_ = ft.Column(buttons, tight=True, spacing=10, scroll=ft.ScrollMode.AUTO)
             show_dialog(ft.AlertDialog(
                 on_dismiss=dismissed,
-                title=ft.Text(title, size=22, weight=ft.FontWeight.W_800, color=TEXT),
+                title=ft.Text(title, size=18 if compact else 22, weight=ft.FontWeight.W_800,
+                              color=TEXT),
+                title_padding=ft.Padding.only(left=24, right=24, top=16, bottom=4)
+                if compact else None,
+                content_padding=ft.Padding.only(left=24, right=24, top=8, bottom=16)
+                if compact else None,
                 bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
-                content=ft.Column([
-                    ft.FilledButton(
-                        text, icon=ft.Icons.CHECK_ROUNDED if checked else None, autofocus=checked,
-                        on_click=pick(action), width=380,
-                        style=ft.ButtonStyle(
-                            bgcolor={ft.ControlState.FOCUSED: TV_FOCUS_BG,
-                                     ft.ControlState.DEFAULT: SURFACE_2},
-                            side=TV_FOCUS_SIDE,
-                            color=TV_FOCUS_TEXT, icon_color=TV_FOCUS_TEXT,
-                            padding=ft.Padding.symmetric(horizontal=20, vertical=18),
-                            shape=ft.RoundedRectangleBorder(radius=12),
-                            text_style=ft.TextStyle(size=17, weight=ft.FontWeight.W_600)))
-                    for text, checked, action in options], tight=True, spacing=10),
+                content=body_,
             ))
 
         def open_choice(e, title, key):
@@ -4055,6 +4138,8 @@ def main(page: ft.Page, reopen=None):
             reload_playlist(pos)
 
         # ── трансляція на Chromecast / Google TV
+        BETA_KIND = {"dlna": "  ·  DLNA (бета)", "airplay": "  ·  AirPlay (бета)"}
+
         def by_ip_button():
             return ft.TextButton("Підключити за IP-адресою", icon=ft.Icons.LAN_OUTLINED,
                                  style=ft.ButtonStyle(color=MUTED, icon_color=MUTED),
@@ -4096,14 +4181,14 @@ def main(page: ft.Page, reopen=None):
                                     "ізолює пристрої один від одного (гостьова мережа чи "
                                     "«ізоляція клієнтів» у налаштуваннях роутера) — або адреса "
                                     "інша. Телефон і телевізор мають бути в одній мережі.")
+                elif r["airplay"]:
+                    page.pop_dialog()
+                    dev = await asyncio.to_thread(airplay.device, host)
+                    await start_cast(dev)
+                    return
                 else:
-                    extra = []
-                    if r["airplay"]:
-                        extra.append("є AirPlay")
-                    if r["cast"]:
-                        extra.append("є Google Cast")
-                    result.value = ("Телевізор відповідає, але DLNA-плеєр у ньому не знайдено"
-                                    + (f" ({', '.join(extra)})" if extra else "")
+                    result.value = ("Телевізор відповідає, але ні DLNA, ні AirPlay у ньому не "
+                                    "знайдено" + (" (є Google Cast)" if r["cast"] else "")
                                     + ". Напишіть про це автору через «Повідомити про проблему».")
                 page.update()
 
@@ -4158,7 +4243,7 @@ def main(page: ft.Page, reopen=None):
             else:
                 devices_col.controls = [
                     ft.FilledButton(
-                        d["name"] + ("  ·  DLNA (бета)" if d.get("kind") == "dlna" else ""),
+                        d["name"] + BETA_KIND.get(d.get("kind"), ""),
                         icon=ft.Icons.TV_ROUNDED, width=dialog_width(),
                         on_click=lambda e, d=d: page.run_task(start_cast, d),
                         style=ft.ButtonStyle(bgcolor=SURFACE_2, color=TEXT, icon_color=ACCENT,
@@ -4194,8 +4279,10 @@ def main(page: ft.Page, reopen=None):
 
             try:
                 sess = await asyncio.to_thread(connect)
-            except Exception:
-                toast(f"Не вдалося почати трансляцію на «{device['name']}»",
+            except Exception as ex:
+                # для бета-способів (DLNA, AirPlay) — причина: її можна переслати автору
+                why = f": {ex}" if device.get("kind") in ("dlna", "airplay") and str(ex) else ""
+                toast(f"Не вдалося почати трансляцію на «{device['name']}»{why}",
                       ft.Icons.ERROR_OUTLINE_ROUNDED)
                 return
             p["cast"] = sess

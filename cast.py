@@ -31,7 +31,14 @@ def discover(timeout=6):
                 pass
     # один телевізор часто видно і як Cast, і як DLNA — лишаємо Cast (він надійніший)
     cast_names = {d["name"] for d in found if d["kind"] == "cast"}
-    return [d for d in found if d["kind"] == "cast" or d["name"] not in cast_names]
+    found = [d for d in found if d["kind"] == "cast" or d["name"] not in cast_names]
+    # телевізори, додані за IP, без DLNA — через AirPlay (якщо він є)
+    import airplay
+    dlna_hosts = {dlna._devices[d["uuid"]]["host"] for d in found if d["kind"] == "dlna"}
+    for host in dlna.MANUAL_HOSTS:
+        if host not in dlna_hosts and airplay.available(host):
+            found.append(airplay.device(host))
+    return found
 
 
 def open_session(device, headers=None):
@@ -39,6 +46,9 @@ def open_session(device, headers=None):
     if device.get("kind") == "dlna":
         import dlna
         return dlna.Session(device["uuid"], headers)
+    if device.get("kind") == "airplay":
+        import airplay
+        return airplay.Session(device["host"], device.get("name", ""))
     return Session(device["uuid"])
 
 
