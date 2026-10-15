@@ -34,10 +34,13 @@ from ui import ACCENT, BG, BORDER, MUTED, SURFACE, SURFACE_2, SURFACE_3, TEXT
 
 # Розділи бічного меню: (секція, [(назва, шлях, іконка)])
 FAV_PATH = "favorites"  # «Обране» — локальний список, не розділ сайту
+HISTORY_PATH = "history"  # «Історія переглядів» — усе переглянуте, разом із завершеним
+LOCAL_PATHS = (FAV_PATH, HISTORY_PATH)
 
 NAV = [
     ("Моє", [
         ("Обране", FAV_PATH, ft.Icons.BOOKMARK_ROUNDED),
+        ("Історія переглядів", HISTORY_PATH, ft.Icons.HISTORY_ROUNDED),
     ]),
     ("Серіали", [
         ("Усі серіали", "/serials/", ft.Icons.LIVE_TV_ROUNDED),
@@ -765,6 +768,8 @@ def main(page: ft.Page, reopen=None):
         # через це полички перебудовувались, і екран «стрибав»)
         if continue_signature() != before[0]:
             render_continue(focus=False)
+            if len(page.views) == 1 and st["mode"] == ("cat", HISTORY_PATH):
+                page.run_task(reload)
         if favorites_signature() != before[1] and len(page.views) == 1 and \
                 st["mode"] == ("cat", FAV_PATH):
             page.run_task(reload)
@@ -1220,6 +1225,7 @@ def main(page: ft.Page, reopen=None):
             pass
 
     async def open_drawer():
+        release_search()
         st["drawer_open"] = True
         if TV:
             mark_nav()
@@ -1257,6 +1263,7 @@ def main(page: ft.Page, reopen=None):
         await open_category(*DESTINATIONS[index - 1][:2])
 
     async def open_category(name, path):
+        release_search()
         search.value = ""
         clear_btn.visible = False
         set_heading(name)
@@ -1581,6 +1588,15 @@ def main(page: ft.Page, reopen=None):
         st["search_has_focus"] = False
         page.run_task(hide_recent_later)
 
+    def release_search():
+        """Телефон: прибрати фокус із поля пошуку (і клавіатуру). У Flet немає «blur», тож
+        фокус переходить на кнопку меню; інакше Flutter після закриття меню чи переходу
+        повертав фокус у пошук — і клавіатура вискакувала сама."""
+        if is_mobile and st.get("search_has_focus"):
+            st["search_has_focus"] = False
+            fill_recent()
+            page.run_task(menu_btn.focus)
+
     search = ft.TextField(
         on_focus=lambda e: (quiet(), show_recent(True)), on_blur=search_blur,
         hint_text="Пошук фільмів і серіалів", height=40, text_size=14, dense=True,
@@ -1792,17 +1808,23 @@ def main(page: ft.Page, reopen=None):
         top_bar = ft.Row([menu_btn, title_block, tv_layout, search_btn], spacing=12,
                          vertical_alignment=ft.CrossAxisAlignment.CENTER)
     else:
-        top_bar = ft.Row([menu_btn, cat_back, title_block, bell, search, layout_toggle,
-                          *win_buttons()],
+        # перетягувати вікно (і розгортати подвійним кліком) — лише за заголовок і порожнє
+        # місце: раніше зоною перетягування була вся панель, і подвійний клік у полі пошуку
+        # (щоб виділити слово) розгортав вікно на весь екран
+        top_bar = ft.Row([menu_btn, cat_back,
+                          ft.WindowDragArea(title_block, maximizable=True, expand=True),
+                          bell, search, layout_toggle, *win_buttons()],
                          spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER)
-    top_bar_box = drag_area(ft.Container(
+    top_bar_box = ft.Container(
         top_bar,
         padding=ft.Padding.only(left=12 + traffic_gap, right=8 if is_win else 20, top=10,
                                 bottom=10),
         bgcolor=BG if is_mobile else ft.Colors.with_opacity(0.85, BG),
         blur=None if (is_mobile or TV) else ft.Blur(20, 20),
         border=ft.Border.only(bottom=ft.BorderSide(1, BORDER)),
-    ))
+    )
+    if TV:  # на ПК зона перетягування — лише заголовок (див. top_bar вище)
+        top_bar_box = drag_area(top_bar_box)
 
     # ═════════════════════ картки ═════════════════════
     tmdb_slots = asyncio.Semaphore(4)  # не більше 4 пошуків у TMDB одночасно
@@ -1996,6 +2018,7 @@ def main(page: ft.Page, reopen=None):
     # ═════════════════════ каталог ═════════════════════
     def on_scroll(e: ft.OnScrollEvent):
         quiet()
+        release_search()  # гортають — пошук уже не потрібен
         if e.pixels >= e.max_scroll_extent - 700:
             page.run_task(load_more)
 
@@ -2112,13 +2135,23 @@ def main(page: ft.Page, reopen=None):
     def render(items, append=False, animate=True):
         # в «Обраному» серіали з новою серією — з підписом
         new = st.get("fav_new", set()) if st["mode"] == ("cat", FAV_PATH) else set()
+
+        def caption(it):
+            h = it.get("_h")
+            if h:  # «Історія переглядів»: завершене чи де зупинились
+                return "Переглянуто ✓" if watched(h) else resume_caption(h)
+            return "Нова серія" if it["url"] in new else None
+
+        def progress(it):
+            h = it.get("_h")
+            return h["pos"] / h["dur"] if h and h.get("dur") and not watched(h) else None
+
         if st["layout"] == "grid":
             w = tv_grid_card_w() if TV else None
-            cards = [grid_card(it, tv_w=w, caption="Нова серія" if it["url"] in new else None)
+            cards = [grid_card(it, tv_w=w, caption=caption(it), progress=progress(it))
                      for it in items]
         else:
-            cards = [list_card(it, caption="Нова серія" if it["url"] in new else None)
-                     for it in items]
+            cards = [list_card(it, caption=caption(it), progress=progress(it)) for it in items]
         if not animate:
             for c in cards:
                 ui.reveal(c)
@@ -2139,6 +2172,12 @@ def main(page: ft.Page, reopen=None):
         kind, val = st["mode"]
         if kind == "cat" and val == FAV_PATH:
             return active_favorites() if page_no == 1 else []
+        if kind == "cat" and val == HISTORY_PATH:
+            if page_no > 1:
+                return []
+            return [dict({k: h.get(k, "") for k in ("url", "title", "orig", "poster", "age")},
+                         _h=h)
+                    for h in history if not h.get("removed") and h.get("title")]
         if kind == "cat" and st.get("filters"):
             filters = dict(st["filters"])
             return await asyncio.to_thread(core.catalog_filtered, val, page_no, filters)
@@ -2150,7 +2189,7 @@ def main(page: ft.Page, reopen=None):
         які виглядали як блимання)."""
         refresh_genre_bar()
         kind_, val_ = st["mode"]
-        if kind_ == "cat" and val_ != FAV_PATH:
+        if kind_ == "cat" and val_ not in LOCAL_PATHS:
             if st.get("filters_for") != val_:  # інший розділ — фільтри з нуля
                 st["filters_for"], st["filters"], st["filter_defs"] = val_, {}, []
                 render_filters()
@@ -2201,6 +2240,12 @@ def main(page: ft.Page, reopen=None):
             body.content = empty_state(ft.Icons.BOOKMARK_BORDER_ROUNDED, "Тут поки порожньо",
                                        "Додавайте фільми й серіали кнопкою «В обране» "
                                        "на їхній сторінці")
+            page.update()
+            return
+        if not items and st["mode"] == ("cat", HISTORY_PATH):
+            body.content = empty_state(ft.Icons.HISTORY_ROUNDED, "Історія порожня",
+                                       "Тут будуть фільми й серіали, які ви дивились — "
+                                       "і ті, що вже переглянули до кінця")
             page.update()
             return
         if not items:
@@ -2267,6 +2312,7 @@ def main(page: ft.Page, reopen=None):
         if not q:
             return
         remember_search(q)
+        release_search()  # пошук запущено — клавіатуру сховати
         show_recent(False)
         st["mode"] = ("search", q)
         drawer.selected_index = st["nav_index"] = None
@@ -2704,6 +2750,7 @@ def main(page: ft.Page, reopen=None):
 
     def home_scroll(e: ft.OnScrollEvent):
         quiet()
+        release_search()
         if e.event_type == ft.ScrollType.OVERSCROLL and (e.overscroll or 0) < 0 \
                 and e.pixels <= e.min_scroll_extent + 1:
             pull["acc"] += -(e.overscroll or 0)
@@ -3440,22 +3487,32 @@ def main(page: ft.Page, reopen=None):
                 return focusable(body, go, radius=10)
             return ft.Container(body, width=110, border_radius=10, ink=True, on_click=go)
 
-        photo = (ft.Image(src=pers["photo"] or a["photo"], width=110, height=150,
-                          fit=ft.BoxFit.COVER, border_radius=12)
-                 if (pers["photo"] or a["photo"]) else ft.Container())
+        src = pers["photo"] or a["photo"]
+        bio = pers["bio"] or "Біографії немає"
+        works = ft.Row([work_card(w) for w in pers["works"]], spacing=12, scroll=ft.ScrollMode.AUTO)
+        hint = ft.Text("Відомі роботи — натисніть, щоб знайти на сайті", size=13, color=MUTED)
+        if is_mobile:
+            # телефон: фото й ім'я вгорі, під ними — уся біографія; вікно прокручується
+            head = ft.Row([
+                ft.Image(src=src, width=84, height=112, fit=ft.BoxFit.COVER, border_radius=10)
+                if src else ft.Container(),
+                ft.Text(name, size=20, weight=ft.FontWeight.W_800, color=TEXT, expand=True)],
+                spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            body = ft.Column([head, ft.Text(bio, size=13, color=MUTED), hint, works],
+                             spacing=12, tight=True, scroll=ft.ScrollMode.AUTO,
+                             height=(page.height or 700) - 230, width=(page.width or 400) - 60)
+        else:
+            photo = (ft.Image(src=src, width=110, height=150, fit=ft.BoxFit.COVER,
+                              border_radius=12) if src else ft.Container())
+            text = ft.Column([ft.Text(name, size=20, weight=ft.FontWeight.W_800, color=TEXT),
+                              ft.Text(bio, size=13, color=MUTED)],
+                             spacing=6, scroll=ft.ScrollMode.AUTO, height=170, expand=True)
+            body = ft.Column([
+                ft.Row([photo, text], spacing=16, vertical_alignment=ft.CrossAxisAlignment.START),
+                hint, works,
+            ], tight=True, spacing=14, width=min(640, (page.width or 700) - 60))
         show_dialog(ft.AlertDialog(
-            bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
-            content=ft.Column([
-                ft.Row([photo, ft.Column([
-                    ft.Text(name, size=20, weight=ft.FontWeight.W_800, color=TEXT),
-                    ft.Text(pers["bio"] or "Біографії немає", size=13, color=MUTED,
-                            max_lines=7, overflow=ft.TextOverflow.ELLIPSIS),
-                ], spacing=6, expand=True)], spacing=16,
-                    vertical_alignment=ft.CrossAxisAlignment.START),
-                ft.Text("Відомі роботи — натисніть, щоб знайти на сайті", size=13, color=MUTED),
-                ft.Row([work_card(w) for w in pers["works"]], spacing=12,
-                       scroll=ft.ScrollMode.AUTO),
-            ], tight=True, spacing=14, width=min(640, (page.width or 700) - 60)),
+            bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18), content=body,
             actions=[ft.TextButton("Закрити", on_click=lambda e: page.pop_dialog(),
                                    style=ft.ButtonStyle(color=MUTED))]))
 
@@ -3469,6 +3526,7 @@ def main(page: ft.Page, reopen=None):
         page.run_task(do_search, q)
 
     async def open_title(item, autoplay=False, resume=False):
+        release_search()
         ctx = {"item": item, "info": None, "seasons": [], "season": 0}
 
         def backdrop_image(src):
@@ -4824,6 +4882,12 @@ def main(page: ft.Page, reopen=None):
                     # нічого не міняв на око, а згорнути вікно після цього Windows не давала
                     w.maximized = False
                     page.update()
+            if is_win:
+                # Flet надсилає команду лише при зміні значення, а розгорнуте вікно без рамки
+                # він, схоже, сам вважає повноекранним — тоді «на весь екран» / «вийти» не
+                # доходили до Windows. Спершу протилежне значення, потім потрібне.
+                w.full_screen = not on
+                page.update()
             page.window.full_screen = on
             fs_btn.icon = ft.Icons.FULLSCREEN_EXIT_ROUNDED if on else ft.Icons.FULLSCREEN_ROUNDED
             fs_btn.tooltip = "Вийти з повного екрана" if on else "На весь екран"
@@ -5062,7 +5126,8 @@ def main(page: ft.Page, reopen=None):
             video.controls = fv.AdaptiveVideoControls(
                 material=fv.MaterialVideoControls(**mobile_style) if is_mobile else None,
                 material_desktop=None if is_mobile else fv.MaterialDesktopVideoControls(
-                    **style, hide_mouse_on_controls_removal=True))
+                    **style, hide_mouse_on_controls_removal=True,
+                    play_and_pause_on_tap=True))  # клік лівою — пауза / відтворення, як пробіл
 
         def alive():
             try:
@@ -5906,8 +5971,8 @@ def main(page: ft.Page, reopen=None):
         if isinstance(top.data, dict) and top.data.get("refresh"):
             top.data["refresh"]()
         render_continue()
-        if len(page.views) == 1 and st["mode"] == ("cat", FAV_PATH):
-            page.run_task(reload)  # могли прибрати з обраного на сторінці фільму
+        if len(page.views) == 1 and st["mode"] in (("cat", FAV_PATH), ("cat", HISTORY_PATH)):
+            page.run_task(reload)  # могли прибрати з обраного / додати в історію
         elif TV and len(page.views) == 1 and st["mode"][0] != "home" and st.get("return_focus"):
             page.run_task(focus_later, st["return_focus"])
         page.update()
