@@ -731,6 +731,7 @@ def main(page: ft.Page, reopen=None):
         await open_settings()
 
     async def startup():
+        is_tablet()  # телефон чи планшет — за розміром екрана на старті
         await load_settings()
         page.run_task(sync_loop)
         page.run_task(check_fav_new)  # нові серії серіалів з Обраного
@@ -5384,7 +5385,11 @@ def main(page: ft.Page, reopen=None):
             if not on:
                 st["fullscreen_exit"] = time.monotonic()
                 p["auto_fs"] = False  # вийшли (кнопкою чи поворотом) — далі знову за поворотом
-            if is_mobile and not on and accel is not None:
+            if is_mobile and not on and is_tablet():
+                # планшет: після виходу орієнтація лишається, як була (його тримають і
+                # горизонтально) — лише знімаємо обмеження повноекранного плеєра
+                page.run_task(page.set_allowed_device_orientations, [])
+            elif is_mobile and not on and accel is not None:
                 # вийшли кнопкою, а телефон ще в руках горизонтально — інтерфейс
                 # повертаємо вертикально й тримаємо так, доки телефон не поставлять
                 # вертикально (тоді поворот знову вільний, див. on_orient)
@@ -6034,6 +6039,13 @@ def main(page: ft.Page, reopen=None):
             player_back() if page.views[-1].route == "/play" else go_back()
         elif e.key.upper() == "F" and (e.meta or e.ctrl) and len(page.views) == 1:
             await search.focus()
+
+    def is_tablet():
+        """Планшет (а не телефон): коротша сторона екрана від 600 точок — як визначає сам
+        Android. Рахуємо один раз (на старті), щоб розділений екран не плутав."""
+        if "tablet" not in st and page.width and page.height:
+            st["tablet"] = is_mobile and min(page.width, page.height) >= 600
+        return st.get("tablet", False)
 
     def set_pip(on):
         """Телефон: дозволити / заборонити плаваюче вікно з відео (MainActivity, див.
