@@ -21,6 +21,7 @@ import flet_video as fv
 
 import appearance
 import airplay
+import appicon
 import cast as uafix_cast
 import core
 import dlna
@@ -405,7 +406,8 @@ def main(page: ft.Page, reopen=None):
                 # і для українських (там субтитри — лише написи на екрані)
                 "sub_orig": "", "sub_ua": "",
                 # пропускати заставку UAFLIX (16 с на початку відео з «uaflix» у назві файлу)
-                "skip_intro": True}
+                "skip_intro": True,
+                "app_icon": "classic"}  # іконка застосунку (appicon.py)
 
     # Історія переглядів: [{url, title, orig, poster, age, season, label, si, ei, voice,
     # pos, dur, ts}] — найновіше першим. Позиція (pos) і тривалість (dur) — у мілісекундах.
@@ -733,6 +735,8 @@ def main(page: ft.Page, reopen=None):
     async def startup():
         is_tablet()  # телефон чи планшет — за розміром екрана на старті
         await load_settings()
+        if first and settings["app_icon"] != "classic" and (is_mac or is_win):
+            apply_icon(settings["app_icon"])  # Mac: оновлення ставить .app зі стандартною
         page.run_task(sync_loop)
         page.run_task(check_fav_new)  # нові серії серіалів з Обраного
         page.run_task(bell_loop, RUN["gen"])  # і після зміни теми (дзвіночок — новий)
@@ -2935,6 +2939,79 @@ def main(page: ft.Page, reopen=None):
          "Автор, сторінка проєкту, повідомити про проблему"),
     ]
 
+    # ── іконка застосунку (appicon.py)
+    def icon_where():
+        """Де видно іконку на цій платформі (підпис рядка) або None — змінити не можна."""
+        if TV:
+            return "У меню телевізора"
+        if is_android:
+            return "На головному екрані й у списку застосунків"
+        if is_mac:
+            return "У Dock, Finder і Launchpad"
+        if is_win:
+            return "На панелі завдань, поки застосунок відкритий"
+        return None
+
+    def apply_icon(name):
+        if is_android:
+            page.run_task(ft.UrlLauncher().launch_url, f"uafixupdate://icon?name={name}",
+                          mode=ft.LaunchMode.EXTERNAL_APPLICATION)
+        elif is_mac or is_win:
+            async def go():
+                await asyncio.to_thread(appicon.apply, name, "macos" if is_mac else "windows",
+                                        page)
+                if is_win:
+                    page.update()
+            page.run_task(go)
+
+    def icon_row(row):
+        """Рядок налаштувань (row — будівник рядка з open_settings)."""
+        names = dict(appicon.VARIANTS)
+        current = ft.Text(names.get(settings["app_icon"], "Класична"), color=MUTED, size=14)
+
+        def pick(name):
+            page.pop_dialog()
+            settings["app_icon"] = name
+            page.run_task(prefs.set, "app_icon", name)
+            current.value = names[name]
+            current.update()
+            apply_icon(name)
+            toast("Іконка зміниться за кілька секунд" if is_android else "Іконку змінено",
+                  ft.Icons.CHECK_CIRCLE_ROUNDED)
+
+        def open_picker(e):
+            tiles = []
+            for key, label in appicon.VARIANTS:
+                sel = key == settings["app_icon"]
+                body = ft.Column([
+                    ft.Container(ft.Image(src=appicon.preview(key), width=84, height=84,
+                                          border_radius=20),
+                                 padding=4, border_radius=24,
+                                 border=ft.Border.all(3, ACCENT if sel else ft.Colors.TRANSPARENT)),
+                    ft.Text(label, size=13, color=TEXT,
+                            weight=ft.FontWeight.W_700 if sel else ft.FontWeight.W_500)],
+                    spacing=6, tight=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+                tiles.append(focusable(body, lambda e, k=key: pick(k), radius=24,
+                                       autofocus=sel) if TV else
+                             ft.Container(body, on_click=lambda e, k=key: pick(k),
+                                          border_radius=24, ink=True, padding=4))
+            show_dialog(ft.AlertDialog(
+                title=ft.Text("Іконка застосунку", size=20, weight=ft.FontWeight.W_800,
+                              color=TEXT),
+                bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
+                content=ft.Column([ft.Row(tiles, wrap=True, spacing=14, run_spacing=14,
+                                          alignment=ft.MainAxisAlignment.CENTER),
+                                   ft.Text(icon_where(), size=12, color=MUTED)],
+                                  tight=True, spacing=14, width=min(480, (page.width or 520) - 60),
+                                  horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                actions=[ft.TextButton("Закрити", on_click=lambda e: page.pop_dialog(),
+                                       style=ft.ButtonStyle(color=MUTED))]))
+
+        return row(ft.Icons.APPS_ROUNDED, "Іконка застосунку", icon_where(),
+                   trailing=ft.Row([current, ft.Icon(ft.Icons.CHEVRON_RIGHT_ROUNDED, color=MUTED)],
+                                   spacing=4, tight=True),
+                   on_click=open_picker)
+
     async def open_settings(group=None):
         """Налаштування: без group — список груп, з group — сторінка цієї групи."""
         def section(title, rows):
@@ -3385,6 +3462,7 @@ def main(page: ft.Page, reopen=None):
                 row(ft.Icons.GRID_VIEW_ROUNDED, "Вигляд розділів", "Картки чи список",
                     trailing=choice("layout", [("Картки", "grid"), ("Список", "list")],
                                     on_set=apply_layout_default)),
+                *([icon_row(row)] if icon_where() else []),
             ]), section("", [
                 row(icon, title, subtitle,
                     trailing=ft.Icon(ft.Icons.CHEVRON_RIGHT_ROUNDED, color=MUTED),

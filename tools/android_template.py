@@ -28,6 +28,7 @@ MAIN_ACTIVITY = '''package {{ cookiecutter.org_name_2 }}.{{ cookiecutter.package
 import android.app.AlarmManager
 import android.app.PendingIntent
 import android.app.PictureInPictureParams
+import android.content.ComponentName
 import android.content.pm.PackageManager
 import android.util.Rational
 import androidx.annotation.RequiresApi
@@ -125,6 +126,24 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
+    /** Іконка застосунку: кожен варіант — свій «вхід» (activity-alias) у лаунчері; вмикаємо
+     *  вибраний і вимикаємо решту. Спершу — новий, щоб застосунок не зник з лаунчера. */
+    private fun setIcon(name: String) {
+        val all = listOf("Classic", "Reel", "Mask", "Bolt")
+        val want = all.firstOrNull { it.equals(name, ignoreCase = true) } ?: return
+        val base = javaClass.name.substringBeforeLast('.')  // пакет коду (не applicationId)
+        val pm = packageManager
+        try {
+            pm.setComponentEnabledSetting(ComponentName(this, "$base.Icon$want"),
+                PackageManager.COMPONENT_ENABLED_STATE_ENABLED, PackageManager.DONT_KILL_APP)
+            for (n in all) if (n != want) {
+                pm.setComponentEnabledSetting(ComponentName(this, "$base.Icon$n"),
+                    PackageManager.COMPONENT_ENABLED_STATE_DISABLED, PackageManager.DONT_KILL_APP)
+            }
+        } catch (e: Exception) {
+        }
+    }
+
     /** Перезапуск застосунку: запланувати запуск через пів секунди й завершити процес
      *  (Python усередині процесу інакше не почне заново). */
     private fun restartApp() {
@@ -152,6 +171,10 @@ class MainActivity : FlutterFragmentActivity() {
         }
         if (data.host == "pip") {  // плеєр відкрито / закрито
             setPip(data.getQueryParameter("on") == "1")
+            return true
+        }
+        if (data.host == "icon") {  // вибір іконки в налаштуваннях
+            setIcon(data.getQueryParameter("name") ?: "classic")
             return true
         }
         // update.apk кладе Python-частина в кеш (запасні варіанти — дані застосунку)
@@ -189,7 +212,54 @@ INSTALL_INTENT_FILTER = '''
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="uafixupdate" />
             </intent-filter>'''
-LAUNCHER_FILTER_END = "<!-- Google TV -->\n            </intent-filter>"
+LAUNCHER_FILTER = """            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />   <!-- Google TV -->
+            </intent-filter>"""
+# Іконки на вибір (налаштування): лаунчер бачить застосунок через «входи» (activity-alias),
+# кожен зі своєю іконкою й банером TV; увімкнений лише один (див. setIcon у MainActivity)
+ICON_VARIANTS = ["reel", "mask", "bolt"]
+ICONS_DIR = Path(__file__).with_name("app_icons")
+ALIAS = """
+        <activity-alias
+            android:name=".Icon{name}"
+            android:targetActivity=".MainActivity"
+            android:exported="true"
+            android:enabled="{enabled}"
+            android:icon="{icon}"{round}
+            android:banner="{banner}">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity-alias>"""
+ALIASES = ALIAS.format(name="Classic", enabled="true", icon="@mipmap/ic_launcher", round="",
+                       banner="@drawable/tv_banner") + "".join(
+    ALIAS.format(name=v.capitalize(), enabled="false", icon=f"@mipmap/ic_launcher_{v}",
+                 round=f'\n            android:roundIcon="@mipmap/ic_launcher_{v}_round"',
+                 banner=f"@drawable/tv_banner_{v}") for v in ICON_VARIANTS)
+
+
+def copy_icon_resources(res: Path) -> None:
+    """Ресурси іконок-варіантів: ic_launcher_<v>*.png / .xml і tv_banner_<v>.png."""
+    for v in ICON_VARIANTS:
+        for d in sorted((ICONS_DIR / v / "android_res").iterdir()):
+            for f in d.iterdir():
+                stem = f.stem.replace("ic_launcher", f"ic_launcher_{v}", 1)
+                dst = res / d.name / (stem + f.suffix)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                if f.suffix == ".xml":  # адаптивна іконка — з перейменованими шарами
+                    dst.write_text(f.read_text(encoding="utf-8").replace(
+                        "@mipmap/ic_launcher_", f"@mipmap/ic_launcher_{v}_"), encoding="utf-8")
+                else:
+                    shutil.copy(f, dst)
+        for d in sorted((ICONS_DIR / v / "tv_res").iterdir()):
+            for f in d.iterdir():
+                dst = res / d.name / f"tv_banner_{v}{f.suffix}"
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(f, dst)
 # «картинка в картинці» (плаваюче вікно з відео при виході з застосунку)
 ACTIVITY_NAME_ATTR = 'android:name=".MainActivity"'
 PIP_ATTRS = ('android:supportsPictureInPicture="true"\n'
@@ -215,9 +285,13 @@ def main(out_dir: str) -> None:
     if len(manifests) != 1:
         sys.exit(f"AndroidManifest.xml не знайдено однозначно: {manifests}")
     manifest = manifests[0].read_text(encoding="utf-8")
-    if LAUNCHER_FILTER_END not in manifest:
+    if LAUNCHER_FILTER not in manifest:
         sys.exit("Не знайдено intent-filter лаунчера в AndroidManifest.xml — шаблон змінився")
-    manifest = manifest.replace(LAUNCHER_FILTER_END, LAUNCHER_FILTER_END + INSTALL_INTENT_FILTER, 1)
+    # лаунчер відкриває застосунок через «входи» з іконками (ALIASES), а не напряму
+    manifest = manifest.replace(LAUNCHER_FILTER, INSTALL_INTENT_FILTER.lstrip("\n"), 1)
+    if "</activity>" not in manifest:
+        sys.exit("Не знайдено </activity> в AndroidManifest.xml — шаблон змінився")
+    manifest = manifest.replace("</activity>", "</activity>" + ALIASES, 1)
     if ACTIVITY_NAME_ATTR not in manifest:
         sys.exit("Не знайдено MainActivity в AndroidManifest.xml — шаблон змінився")
     manifest = manifest.replace(ACTIVITY_NAME_ATTR,
@@ -227,6 +301,7 @@ def main(out_dir: str) -> None:
     manifest = manifest.replace(
         APP_ICON_ATTR, 'android:banner="@drawable/tv_banner"\n        ' + APP_ICON_ATTR, 1)
     shutil.copy(BANNER, manifests[0].parent / "res" / "drawable-xhdpi" / "tv_banner.png")
+    copy_icon_resources(manifests[0].parent / "res")
     manifests[0].write_text(manifest, encoding="utf-8")
     print(f"Оновлено {manifests[0]}")
 
