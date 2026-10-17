@@ -254,6 +254,27 @@ def search_url(query, page):
             f"&search_start={page}&result_from={(page - 1) * 20 + 1}&story={quote_plus(query)}")
 
 
+def _norm_title(s):
+    return re.sub(r"[^\w]+", " ", (s or "").lower()).strip()
+
+
+def find_title(orig, title=""):
+    """Тайтл на сайті за назвою з TMDB: спершу шукаємо за оригінальною (переклад назви на
+    сайті й у TMDB часто різний), збіг — за точною назвою. → картка або None."""
+    for q, key in ((orig, "orig"), (title, "title")):
+        if not q:
+            continue
+        want = _norm_title(q)
+        try:
+            items = parse_catalog(fetch(search_url(q, 1)))
+        except Exception:
+            continue
+        for it in items:
+            if "/serials/" not in it["url"] and _norm_title(it[key]) == want:
+                return it
+    return None
+
+
 M3U8_RE = re.compile(r'https?:[^\s"\'<>]+?\.m3u8[^\s"\'<>]*', re.I)
 FILE_RE = re.compile(r'''\bfile\s*:\s*(['"])(.*?)(?<!\\)\1''', re.S)
 EPISODE_LINK_RE = re.compile(r'(season|sezon|episode|seriya|seria|seriia|epizod)[-_]?\d+', re.I)

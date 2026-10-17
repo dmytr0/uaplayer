@@ -212,3 +212,52 @@ def person(pid):
     return {"name": d.get("name") or "", "bio": bio,
             "photo": IMG + "w342" + d["profile_path"] if d.get("profile_path") else None,
             "works": works}
+
+
+# ───────── франшизи ─────────
+
+_collections = {}  # id фільму в TMDB → франшиза (у пам'яті, на час роботи)
+
+
+def collection(url, title, orig="", year=""):
+    """Франшиза фільму по порядку виходу: {name, current, parts: [{id, title, orig, year,
+    poster, released}]} або None (не фільм, не частина франшизи). Блокує — з потоку."""
+    if not TMDB_TOKEN:
+        return None
+    found = _find(url, title, orig, year)
+    if found and found[0] != "movie" and "/serials/" not in url:
+        # мультфільм / аніме: _find міг спершу знайти однойменний серіал
+        for q in (title, orig):
+            hit = q and _search("movie", q, str(year or "")[:4])
+            if hit:
+                found = ("movie", hit["id"])
+                break
+    if not found or found[0] != "movie":
+        return None
+    tid = found[1]
+    if tid in _collections:
+        res = _collections[tid]
+        return dict(res, current=tid) if res else None
+    col = (_get(f"/movie/{tid}", language="uk-UA").get("belongs_to_collection") or {})
+    res = None
+    if col.get("id"):
+        data = _get(f"/collection/{col['id']}", language="uk-UA")
+        parts = sorted(data.get("parts", []), key=lambda p: p.get("release_date") or "9999")
+        if len(parts) > 1:
+            name = re.sub(r"\s*[|(-]?\s*(Колекція|Collection)\)?\s*$", "",
+                          data.get("name") or col.get("name") or "", flags=re.I).strip(" |-")
+            res = {"name": name, "parts": [
+                {"id": p["id"], "title": p.get("title") or "", "orig": p.get("original_title") or "",
+                 "year": (p.get("release_date") or "")[:4],
+                 "released": bool(p.get("release_date")) and p["release_date"] <= _today(),
+                 "poster": IMG + "w342" + p["poster_path"] if p.get("poster_path") else None}
+                for p in parts]}
+    _collections[tid] = res
+    for p in (res or {}).get("parts", []):  # інші частини — та сама франшиза
+        _collections.setdefault(p["id"], res)
+    return dict(res, current=tid) if res else None
+
+
+def _today():
+    import datetime
+    return datetime.date.today().isoformat()

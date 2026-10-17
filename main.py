@@ -1755,20 +1755,35 @@ def main(page: ft.Page, reopen=None):
                 page.pop_dialog()
                 page.run_task(do_search, q)
 
-            tv_recent = recent_chips(tv_pick)
+            # нещодавні — кнопками: їх можна вибрати пультом (Chip фокус програмно не бере)
+            tv_recent = [ft.Button(
+                q, icon=ft.Icons.HISTORY_ROUNDED, on_click=lambda e, q=q: tv_pick(q),
+                style=ft.ButtonStyle(
+                    bgcolor={ft.ControlState.FOCUSED: TV_FOCUS_BG,
+                             ft.ControlState.DEFAULT: SURFACE_2},
+                    color=TV_FOCUS_TEXT, icon_color=TV_FOCUS_TEXT, side=TV_FOCUS_SIDE,
+                    elevation=0, shape=ft.RoundedRectangleBorder(radius=10),
+                    padding=ft.Padding.symmetric(horizontal=16, vertical=12)))
+                for q in searches]
+            go_btn = ft.FilledButton("Шукати", icon=ft.Icons.SEARCH_ROUNDED, on_click=submit,
+                                     style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF",
+                                                          icon_color="#FFFFFF",
+                                                          side=TV_FOCUS_SIDE))
+            # поле вводу «з'їдає» стрілку вниз — переводимо фокус самі (див. on_key)
+            st["tv_search_down"] = (tv_recent or [go_btn])[0]
+            field.on_focus = lambda e: (quiet(), st.update(tv_search_field=True))
+            field.on_blur = lambda e: (quiet(), st.update(tv_search_field=False))
             show_dialog(ft.AlertDialog(
                 title=ft.Text("Пошук", size=24, weight=ft.FontWeight.W_800),
                 bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
                 content=ft.Column([field] + ([ft.Text("Нещодавні", color=MUTED, size=16),
-                                              ft.Row(tv_recent[:-1], wrap=True, spacing=10,
+                                              ft.Row(tv_recent, wrap=True, spacing=10,
                                                      run_spacing=10, width=560)]
                                              if tv_recent else []),
                                   tight=True, spacing=14),
                 actions=[ft.TextButton("Скасувати", on_click=lambda e: page.pop_dialog(),
                                        style=ft.ButtonStyle(color=MUTED)),
-                         ft.FilledButton("Шукати", icon=ft.Icons.SEARCH_ROUNDED, on_click=submit,
-                                         style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF",
-                                                              icon_color="#FFFFFF"))],
+                         go_btn],
             ))
 
         def search_focus(on):
@@ -3531,8 +3546,10 @@ def main(page: ft.Page, reopen=None):
                  ft.Container(ft.Icon(ft.Icons.PERSON_ROUNDED, color=MUTED, size=34),
                               width=72, height=72, border_radius=36, bgcolor=SURFACE_2,
                               alignment=ft.Alignment.CENTER))
+        photo_box = ft.Container(photo, padding=3 if TV else 0, shape=ft.BoxShape.CIRCLE,
+                                 border=ft.Border.all(3, ft.Colors.TRANSPARENT) if TV else None)
         body = ft.Container(
-            ft.Column([photo,
+            ft.Column([photo_box,
                        ft.Text(a["name"], size=12, weight=ft.FontWeight.W_600, color=TEXT,
                                max_lines=2, text_align=ft.TextAlign.CENTER, width=92),
                        ft.Text(a["character"], size=11, color=MUTED, max_lines=1,
@@ -3541,8 +3558,13 @@ def main(page: ft.Page, reopen=None):
                       spacing=4, horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True),
             width=96, padding=ft.Padding.symmetric(vertical=6))
         open_ = lambda e, a=a: page.run_task(open_actor, a)  # noqa: E731
-        if TV:  # пультом — лише кнопка отримує фокус (з білою рамкою)
-            return focusable(body, open_, radius=12)
+        if TV:  # пультом — лише кнопка отримує фокус; рамка — навколо фото
+            def ring(f):
+                photo_box.border = ft.Border.all(3, focus_ring if f else ft.Colors.TRANSPARENT)
+                photo_box.update()
+            btn = focusable(body, open_, on_focus_change=ring, radius=12)
+            btn.style.side = None
+            return btn
         return ft.Container(body, border_radius=12, ink=True, on_click=open_)
 
     async def open_actor(a):
@@ -3558,12 +3580,20 @@ def main(page: ft.Page, reopen=None):
             img = (ft.Image(src=w["poster"], width=110, height=165, fit=ft.BoxFit.COVER,
                             border_radius=10) if w["poster"] else
                    ft.Container(width=110, height=165, border_radius=10, bgcolor=SURFACE_2))
-            body = ft.Column([img, ft.Text(w["title"], size=12, color=TEXT, max_lines=2,
-                                           width=110, weight=ft.FontWeight.W_600),
+            # TV: рамка фокуса — лише навколо постера, із зазором
+            ring_box = ft.Container(img, padding=3 if TV else 0, border_radius=14,
+                                    border=ft.Border.all(3, ft.Colors.TRANSPARENT) if TV else None)
+            body = ft.Column([ring_box, ft.Text(w["title"], size=12, color=TEXT, max_lines=2,
+                                                width=110, weight=ft.FontWeight.W_600),
                               ft.Text(w["year"], size=11, color=MUTED)], spacing=4, tight=True)
             go = lambda e, w=w: search_title(w["title"] or w["orig"])  # noqa: E731
             if TV:
-                return focusable(body, go, radius=10)
+                def ring(f, box=ring_box):
+                    box.border = ft.Border.all(3, focus_ring if f else ft.Colors.TRANSPARENT)
+                    box.update()
+                btn = focusable(body, go, on_focus_change=ring, radius=14)
+                btn.style.side = None
+                return btn
             return ft.Container(body, width=110, border_radius=10, ink=True, on_click=go)
 
         src = pers["photo"] or a["photo"]
@@ -3594,6 +3624,101 @@ def main(page: ft.Page, reopen=None):
             bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18), content=body,
             actions=[ft.TextButton("Закрити", on_click=lambda e: page.pop_dialog(),
                                    style=ft.ButtonStyle(color=MUTED))]))
+
+    # ── франшиза: частини по порядку (TMDB) → ті самі фільми на сайті
+    async def load_saga(item, info, title, row, section):
+        try:
+            saga = await asyncio.to_thread(
+                tmdb.collection, item["url"], info.get("title") or item.get("title", ""),
+                info.get("orig") or item.get("orig", ""), info.get("year", ""))
+        except Exception:
+            return
+        if not saga:
+            return
+        # франшиза є — поки шукаємо частини на сайті (кілька секунд), показуємо заготовки
+        title.value = f"Франшиза «{saga['name']}»" if saga["name"] else "Франшиза"
+        row.controls = [ft.Container(shimmer(ft.Column([
+            ft.Container(aspect_ratio=2 / 3, bgcolor=SURFACE_2, border_radius=10),
+            ft.Container(height=12, bgcolor=SURFACE_2, border_radius=4),
+            ft.Container(height=10, width=40, bgcolor=SURFACE_2, border_radius=4)],
+            spacing=6, tight=True), base_color=SURFACE_2, highlight_color=SURFACE_3),
+            col={"xs": 4}, padding=3 if TV else 0) for _ in saga["parts"][:9]]
+        section.visible = True
+        ui.reveal(section)
+        try:
+            section.update()
+        except Exception:
+            pass
+
+        def lookup(p):
+            if not p["released"] and not p["poster"]:
+                return None
+            try:
+                return core.find_title(p["orig"], p["title"])
+            except Exception:
+                return None
+        found = await asyncio.gather(*[asyncio.to_thread(lookup, p) for p in saga["parts"]])
+        if not any(found):  # жодної частини на сайті — розділ не потрібен
+            section.visible = False
+            try:
+                section.update()
+            except Exception:
+                pass
+            return
+        row.controls = [saga_card(i + 1, p, site, p["id"] == saga["current"] or
+                                  (site or {}).get("url") == item["url"])
+                        for i, (p, site) in enumerate(zip(saga["parts"], found))]
+        try:
+            section.update()
+        except Exception:
+            pass
+
+    def saga_card(num, p, site, current):
+        """Частина франшизи: номер, постер, назва, рік. Немає на сайті — притушена."""
+        # вертикальний постер TMDB (без написів сайту й не обрізаний); сайт — лише якщо нема
+        src = p["poster"] or (site or {}).get("poster")
+        layers = [
+            ui.poster_image(src, radius=10, aspect_ratio=2 / 3),
+            ft.Container(
+                ft.Text(str(num), size=13, weight=ft.FontWeight.W_800, color="#FFFFFF"),
+                bgcolor=ACCENT if current else ft.Colors.with_opacity(0.75, "#000000"),
+                border_radius=8, padding=ft.Padding.symmetric(horizontal=8, vertical=3),
+                left=6, top=6),
+        ]
+        if current:
+            layers.append(ft.Container(border_radius=10, border=ft.Border.all(3, ACCENT),
+                                       left=0, top=0, right=0, bottom=0))
+        if site and current:
+            note, color = "Ви тут", ACCENT
+        elif site:
+            note, color = p["year"], MUTED
+        elif not p["released"]:
+            note, color = f"Скоро · {p['year']}" if p["year"] else "Скоро", MUTED
+        else:
+            note, color = "Немає на сайті", MUTED
+        # TV: рамка фокуса — лише навколо постера, із зазором (як у картках каталогу),
+        # а не довкола всієї картки з підписом
+        ring_box = ft.Container(ft.Stack(layers), padding=3 if TV else 0, border_radius=14,
+                                border=ft.Border.all(3, ft.Colors.TRANSPARENT) if TV else None)
+        body = ft.Column([
+            ring_box,
+            ft.Text((site or {}).get("title") or p["title"], size=12, color=TEXT, max_lines=2,
+                    weight=ft.FontWeight.W_600, overflow=ft.TextOverflow.ELLIPSIS),
+            ft.Text(note, size=11, color=color),
+        ], spacing=4, tight=True, opacity=1 if site else 0.45)
+        col = {"xs": 4}
+        if not site or current:
+            return ft.Container(body, col=col)
+        go = lambda e, it=site: page.run_task(open_title, it)  # noqa: E731
+        if TV:
+            def ring(f):
+                ring_box.border = ft.Border.all(3, focus_ring if f else ft.Colors.TRANSPARENT)
+                ring_box.update()
+            btn = focusable(body, go, on_focus_change=ring, radius=14)
+            btn.style.side = None
+            btn.col = col
+            return btn
+        return ft.Container(body, col=col, border_radius=10, ink=True, on_click=go)
 
     def search_title(q):
         """Знайти тайтл на сайті: закрити вікно, повернутись на головну й шукати."""
@@ -3792,9 +3917,11 @@ def main(page: ft.Page, reopen=None):
             cast, cast_row,
         ], spacing=6), padding=ft.Padding.only(top=8)))
 
+        poster_col = ft.Column(
+            [poster, *([ft.Container(actions_row, padding=ft.Padding.only(top=20))] if TV else [])],
+            spacing=0)
         hero = ft.ResponsiveRow([
-            ft.Container(ft.Column([poster, ft.Container(actions_row, padding=ft.Padding.only(top=20))],
-                                   spacing=0) if TV else poster,
+            ft.Container(poster_col,
                          col={"xs": 12, "md": 6, "lg": 5},
                          alignment=ft.Alignment.CENTER if is_mobile else ft.Alignment.TOP_LEFT),
             ft.Container(hero_info, col={"xs": 12, "md": 6, "lg": 7}),
@@ -3827,8 +3954,25 @@ def main(page: ft.Page, reopen=None):
         ], spacing=10, visible=False))
         ctx.update(seasons_row=seasons_row, episodes_box=episodes_box)
 
+        # ── франшиза (TMDB): усі частини по порядку виходу — з'являється, якщо знайдеться
+        saga_title = ft.Text("", size=22 if is_mobile else 20, weight=ft.FontWeight.W_800,
+                             color=TEXT)
+        # сітка по 3 в ряд (ширина — як у постера над нею; на телефоні — на всю ширину)
+        saga_row = ft.ResponsiveRow([], columns=12, spacing=12, run_spacing=16,
+                                    vertical_alignment=ft.CrossAxisAlignment.START)
+        saga_section = ui.appear(ft.Column([
+            saga_title,
+            ft.Text("Дивитись по порядку виходу", size=13, color=MUTED),
+            ft.Container(height=2),
+            saga_row,
+        ], spacing=6, visible=False))
+
+        if not is_mobile:  # під постером (на телефоні — внизу сторінки, після опису)
+            poster_col.controls.append(ft.Container(saga_section, padding=ft.Padding.only(top=28)))
         content = ft.Container(
-            ft.Column([hero, ft.Container(height=24), episodes_section], spacing=0),
+            ft.Column([hero, ft.Container(height=24), episodes_section,
+                       *([ft.Container(height=24), saga_section] if is_mobile else [])],
+                      spacing=0),
             padding=ft.Padding.only(left=side_pad, right=side_pad, top=8 if is_mobile else 16,
                                     bottom=60),
         )
@@ -3911,6 +4055,7 @@ def main(page: ft.Page, reopen=None):
             cast.value = "У ролях: " + ", ".join(info["actors"])
             cast.visible = True
         page.run_task(load_cast, item, info, cast, cast_row)
+        page.run_task(load_saga, item, info, saga_title, saga_row, saga_section)
         if info["trailer"]:
             trailer_btn.visible = True
             trailer_btn.on_click = lambda e: page.run_task(ft.UrlLauncher().launch_url, info["trailer"])
@@ -6078,6 +6223,10 @@ def main(page: ft.Page, reopen=None):
             if e.key == "Arrow Down" and st.get("nav_focus") == last:
                 nav_edge_back(False)
                 return
+        if TV and e.key == "Arrow Down" and st.get("tv_search_field") and st.get("tv_search_down"):
+            st["tv_search_field"] = False
+            await st["tv_search_down"].focus()  # одразу: поле стрілку вже «з'їло»
+            return
         if TV and e.key == "Arrow Down" and st.get("search_focused") and len(page.views) == 1:
             try:
                 # з «Пошуку» в правому куті — на «Спробувати ще», якщо вона на екрані
