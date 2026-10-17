@@ -307,6 +307,10 @@ def main(page: ft.Page, reopen=None):
     def show_dialog(dlg):
         """page.show_dialog + на телевізорі: біла рамка фокуса на кнопках вікна й фокус на
         головній (autofocus у щойно відкритому вікні не спрацьовує — OK «нікуди» не натискався)."""
+        if dlg.on_dismiss is None:
+            # закриття вікна — подія; без quiet Flet після неї перевіряв і перемальовував усю
+            # сторінку, і головна поверталась на початок
+            dlg.on_dismiss = lambda e: quiet()
         if not TV:
             page.show_dialog(dlg)
             return
@@ -487,6 +491,7 @@ def main(page: ft.Page, reopen=None):
                 "Розпакуйте архів і замініть ним попередню версію застосунку.")
 
         def update(e):
+            quiet()
             page.pop_dialog()
             if platform_name in ("macos", "windows") and url != rel["url"] and (
                     url.lower().endswith(".exe") or updater.desktop_target(platform_name)):
@@ -510,6 +515,7 @@ def main(page: ft.Page, reopen=None):
             toast(hint, ft.Icons.DOWNLOAD_ROUNDED)
 
         def skip(e):
+            quiet()
             save_setting("skipped_version", rel["version"])
             page.pop_dialog()
 
@@ -529,7 +535,7 @@ def main(page: ft.Page, reopen=None):
                                          shape=ft.RoundedRectangleBorder(radius=12),
                                          text_style=ft.TextStyle(size=15, weight=ft.FontWeight.W_700))),
                 ft.Row([
-                    ft.TextButton("Пізніше", on_click=lambda e: page.pop_dialog(),
+                    ft.TextButton("Пізніше", on_click=lambda e: (quiet(), page.pop_dialog()),
                                   style=ft.ButtonStyle(color=TEXT)),
                     ft.TextButton("Пропустити версію", on_click=skip,
                                   style=ft.ButtonStyle(color=MUTED)),
@@ -1139,13 +1145,10 @@ def main(page: ft.Page, reopen=None):
     # ═════════════════════ бічне меню ═════════════════════
     drawer_controls = [
         ft.Container(
-            ft.Row([
-                # іконка застосунку (assets/icon.png), як на робочому столі
-                ft.Image(src="/icon.png", width=44, height=44, border_radius=10),
-                ft.Column([ft.Text("UAFix", size=18, weight=ft.FontWeight.W_800, color=TEXT),
-                           ft.Text("Фільми та серіали українською", size=11, color=MUTED)],
-                          spacing=0),
-            ], spacing=12),
+            # без іконки: її тепер можна вибрати, а тут завжди була б класична
+            ft.Column([ft.Text("UAFix", size=18, weight=ft.FontWeight.W_800, color=TEXT),
+                       ft.Text("Фільми та серіали українською", size=11, color=MUTED)],
+                      spacing=0),
             padding=ft.Padding.only(left=24, right=16, top=40 if is_mac else 20, bottom=12),
         ),
     ]
@@ -1668,7 +1671,9 @@ def main(page: ft.Page, reopen=None):
                                        width=40, height=40, alignment=ft.Alignment.CENTER),
                           bell_dot], width=40, height=40),
         tooltip="Сповіщення", bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=12),
-        menu_position=ft.PopupMenuPosition.UNDER, visible=is_desktop and not TV)
+        menu_position=ft.PopupMenuPosition.UNDER, visible=is_desktop and not TV,
+        # відкриття / закриття меню — теж події: без quiet перемальовувалась уся сторінка
+        on_open=lambda e: quiet(), on_cancel=lambda e: quiet(), on_select=lambda e: quiet())
 
     def fill_bell():
         rel = st.get("update_rel")
@@ -2095,11 +2100,10 @@ def main(page: ft.Page, reopen=None):
 
     # reverse_duration — як швидко зникає старий вміст: коротко, щоб старі картки
     # не просвічували під новими під час перемикання сітка/список
-    body = ft.AnimatedSwitcher(
-        # на TV — миттєво: поява з порожнього фону виглядала як блимання
-        ft.Container(), duration=0 if TV else 180, reverse_duration=0,
-        transition=ft.AnimatedSwitcherTransition.FADE,
-        switch_in_curve=ui.EASE, switch_out_curve=ui.EASE, expand=True)
+    # не AnimatedSwitcher: Flet дає його вмісту новий ключ при КОЖНІЙ перебудові екрана —
+    # відкриття / закриття будь-якого вікна (оновлення, пошук на TV…) створювало головну чи
+    # розділ заново: вони блимали й прокрутка скидалась на початок
+    body = ft.Container(ft.Container(), expand=True)
 
     def tv_grid_cols():
         return 4 if (page.width or 960) - 56 >= 840 else 3
