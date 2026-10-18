@@ -242,6 +242,42 @@ def resolve_category(path):
     return _RESOLVED[path]
 
 
+_HOME = {"at": 0.0, "blocks": {}}
+
+
+def home_blocks(max_age=300):
+    """Блоки головної сторінки сайту: {назва: [картки]} — «Наша озвучка», «Фільми»,
+    «Серіали»… Тут найсвіжіше (що щойно додали чи оновили): у каталогах розділів нові
+    надходження часто опиняються на другій сторінці. Кеш — кілька хвилин на всі полички."""
+    if time.time() - _HOME["at"] < max_age and _HOME["blocks"]:
+        return _HOME["blocks"]
+    soup = BeautifulSoup(fetch(BASE + "/"), "html.parser")
+    blocks = {}
+    for sect in soup.select("main div.sect"):
+        title = sect.select_one(".sect-title")
+        items = parse_catalog(str(sect))
+        if title and items:
+            blocks[title.get_text(" ", strip=True)] = items
+    _HOME.update(at=time.time(), blocks=blocks)
+    return blocks
+
+
+def fresh_catalog(path, block):
+    """Поличка головної: спершу свіже з блоку головної сайту, далі — перша сторінка розділу."""
+    try:
+        first = home_blocks().get(block, []) if block else []
+    except Exception:
+        first = []
+    try:
+        rest = parse_catalog(fetch(catalog_url(path, 1)))
+    except Exception:
+        if not first:
+            raise
+        rest = []
+    seen = {it["url"] for it in first}
+    return first + [it for it in rest if it["url"] not in seen]
+
+
 def catalog_url(path, page):
     path = path if path.endswith("/") else path + "/"
     if page > 1:

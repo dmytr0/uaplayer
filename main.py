@@ -61,7 +61,7 @@ NAV = [
     ]),
     ("Інше", [
         ("Дорами", "/dorama/", ft.Icons.FAVORITE_ROUNDED),
-        ("Наша озвучка", "/dubbing/", ft.Icons.MIC_ROUNDED),
+        ("Озвучка від UAflix", "/dubbing/", ft.Icons.MIC_ROUNDED),
     ]),
 ]
 DESTINATIONS = [d for _, items in NAV for d in items]
@@ -93,12 +93,14 @@ def genre_root(path):
     return None
 
 # полички під банером на головній: (назва, розділ)
+# (назва, розділ, блок головної сайту — звідти найсвіжіше йде першим; див. core.fresh_catalog)
 SHELVES = [
-    ("Нові серії", "/serials/new_uaserial/"),
-    ("Новинки кіно", "/films/new_netflix_ua/"),
-    ("Серіали 2026", "/serials/serial_2026_online/"),
-    ("Аніме", "/anime/"),
-    ("Мультфільми", "/cartoons/"),
+    ("Озвучка від UAflix", "/dubbing/", "Наша озвучка"),
+    ("Нові серії", "/serials/new_uaserial/", "Серіали"),
+    ("Новинки кіно", "/films/new_netflix_ua/", "Фільми"),
+    ("Серіали 2026", "/serials/serial_2026_online/", None),
+    ("Аніме", "/anime/", "Аніме"),
+    ("Мультфільми", "/cartoons/", "Мультфільми"),
 ]
 BANNER_INTERVAL = 7  # секунд на слайд
 
@@ -2205,6 +2207,10 @@ def main(page: ft.Page, reopen=None):
         if kind == "cat" and st.get("filters"):
             filters = dict(st["filters"])
             return await asyncio.to_thread(core.catalog_filtered, val, page_no, filters)
+        block = next((b for _, pth, b in SHELVES if pth == val and b), None)
+        if kind == "cat" and page_no == 1 and block:
+            # перша сторінка — зі свіжим із головної сайту (наступні без повторів: load_more)
+            return await asyncio.to_thread(core.fresh_catalog, val, block)
         url = core.catalog_url(val, page_no) if kind == "cat" else core.search_url(val, page_no)
         return await asyncio.to_thread(lambda: core.parse_catalog(core.fetch(url)))
 
@@ -2551,7 +2557,7 @@ def main(page: ft.Page, reopen=None):
     # ── полички під банером
     shelf_card_w = 220 if is_mobile else TV_CARD_W
 
-    def shelf(name, path):
+    def shelf(name, path, block=None):
         row = ft.ListView(
             horizontal=True, spacing=16, height=shelf_card_w / POSTER_RATIO + 28,
             padding=ft.Padding.symmetric(horizontal=side, vertical=14),
@@ -2561,8 +2567,7 @@ def main(page: ft.Page, reopen=None):
 
         async def load():
             try:
-                items = await asyncio.to_thread(
-                    lambda: core.parse_catalog(core.fetch(core.catalog_url(path, 1))))
+                items = await asyncio.to_thread(core.fresh_catalog, path, block)
             except Exception:
                 items = []
             cards = []
@@ -2599,7 +2604,7 @@ def main(page: ft.Page, reopen=None):
                            spacing=0)
         return column, load
 
-    shelves = [shelf(n, pth) for n, pth in SHELVES]
+    shelves = [shelf(*s) for s in SHELVES]
 
     continue_row = ft.ListView(horizontal=True, spacing=16, height=shelf_card_w / POSTER_RATIO + 28,
                                padding=ft.Padding.symmetric(horizontal=side, vertical=14))
