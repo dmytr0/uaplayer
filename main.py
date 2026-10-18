@@ -3894,10 +3894,6 @@ def main(page: ft.Page, reopen=None):
 
         fav_btn = ft.OutlinedButton("В обране", style=secondary, on_click=on_fav)
         fav_look()
-        m3u_btn = ft.OutlinedButton(".m3u", icon=ft.Icons.DOWNLOAD_ROUNDED, style=secondary,
-                                    visible=not TV,
-                                    tooltip="Зберегти плейлист", disabled=True,
-                                    on_click=lambda e: page.run_task(save_m3u, ctx))
         site_btn = ft.IconButton(
             ft.Icons.OPEN_IN_NEW_ROUNDED, visible=not TV, tooltip="Відкрити на сайті", icon_color=MUTED,
             on_click=lambda e: page.run_task(ft.UrlLauncher().launch_url, item["url"]))
@@ -3911,7 +3907,7 @@ def main(page: ft.Page, reopen=None):
         ctx["voice_row"] = voice_row
         ctx["voice_box"] = voice_box
 
-        actions_row = ft.Row([resume_btn, play_btn, fav_btn, trailer_btn, m3u_btn, site_btn],
+        actions_row = ft.Row([resume_btn, play_btn, fav_btn, trailer_btn, site_btn],
                              spacing=10 if not TV else 12, wrap=True, run_spacing=12)
         if TV:
             # курсор на кнопках під постером — сторінка вгору: видно постер і опис (самі вони
@@ -4108,7 +4104,7 @@ def main(page: ft.Page, reopen=None):
             return
         total = sum(len(s["episodes"]) for s in seasons)
         ep_status.value = f"{total} {plural(total, 'серія', 'серії', 'серій')}"
-        play_btn.disabled = m3u_btn.disabled = False
+        play_btn.disabled = False
         play_btn.content, play_btn.icon = "Дивитись", ft.Icons.PLAY_ARROW_ROUNDED
         has_resume = update_resume() is not None
         # після виходу з плеєра кнопку «Продовжити» оновлюємо (нова хвилина)
@@ -6141,28 +6137,6 @@ def main(page: ft.Page, reopen=None):
                 [video, mini_drag, bar_box, hud, next_card, peek_cover], expand=True, scale=1,
                 animate_scale=ft.Animation(260, ft.AnimationCurve.EASE_OUT_CUBIC)),
             on_hover=on_move, expand=True)
-
-    async def save_m3u(ctx):
-        eps = [ep for s in ctx["seasons"] for ep in s["episodes"]]
-        if any(ep["sources"] is None for ep in eps):
-            toast("Збираю посилання на всі серії…", ft.Icons.HOURGLASS_TOP_ROUNDED)
-            for ep in eps:
-                try:
-                    await ensure_sources(ep)
-                except Exception:
-                    pass
-        entries = [pick_source(ep, ctx.get("voice", "")) for ep in eps if ep["sources"]]
-        if not entries:
-            return
-        show = (ctx["info"] or {}).get("title") or ctx["item"]["title"]
-        safe = re.sub(r'[\\/:*?"<>|]+', "_", show) or "playlist"
-        path = await ft.FilePicker().save_file(
-            file_name=f"{safe}.m3u", allowed_extensions=["m3u"],
-            file_type=ft.FilePickerFileType.CUSTOM,
-            src_bytes=core.build_m3u(entries, show).encode("utf-8"),
-        )
-        if path:
-            toast("Плейлист збережено", ft.Icons.CHECK_CIRCLE_ROUNDED)
 
     # ═════════════════════ навігація ═════════════════════
     def go_back():

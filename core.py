@@ -528,17 +528,6 @@ def quality_url(url, quality):
     return variants[pick_quality(variants, quality)]
 
 
-def build_m3u(entries, show=""):
-    lines = ["#EXTM3U"]
-    for i, e in enumerate(entries, 1):
-        name = " — ".join([show] + [p for p in e["path"] if p]) or f"{show} {i}"
-        lines += [f"#EXTINF:-1,{name}",
-                  f"#EXTVLCOPT:http-referrer={e['referer']}",
-                  f"#EXTVLCOPT:http-user-agent={UA}",
-                  e["url"]]
-    return "\n".join(lines) + "\n"
-
-
 SE_URL_RE = re.compile(r"s(\d{1,2})e(\d{1,3})", re.I)
 EP_ONLY_RE = re.compile(r"^(\d+)\s*сері[яї]\s*(.*)$|^сері[яї]\s*(\d+)\s*(.*)$", re.I)
 
