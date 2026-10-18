@@ -3468,6 +3468,13 @@ def main(page: ft.Page, reopen=None):
                     else "Відкриє форму на GitHub з даними про версію й пристрій",
                     on_click=lambda e: open_feedback() if feedback.enabled()
                     else open_link(issue_url())),
+                row(ft.Icons.GAVEL_ROUNDED, "Застереження",
+                    "Неофіційний некомерційний застосунок, не пов'язаний з uafix.net чи UAflix. "
+                    "Відео не зберігає й не розповсюджує — лише показує те, що сайт відкрито "
+                    "публікує. Права на фільми належать правовласникам, відповідальність за "
+                    "вміст — на сайті, що його розміщує.",
+                    on_click=lambda e: open_link(
+                        f"https://github.com/{updater.REPO}#застереження")),
                 row(ft.Icons.IMAGE_OUTLINED, "Кадри фільмів — TMDB",
                     "Цей застосунок використовує API TMDB, але не схвалений і не сертифікований TMDB",
                     on_click=lambda e: open_link("https://www.themoviedb.org")),
