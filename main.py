@@ -306,10 +306,11 @@ def main(page: ft.Page, reopen=None):
     PLAYER_FOCUS_SIDE = {ft.ControlState.FOCUSED: ft.BorderSide(4, "#FFFFFF"),
                          ft.ControlState.DEFAULT: ft.BorderSide(0, ft.Colors.TRANSPARENT)}
 
-    def show_dialog(dlg, focus=None):
+    def show_dialog(dlg, focus=None, focus_delay=0.35):
         """page.show_dialog + на телевізорі: біла рамка фокуса на кнопках вікна й фокус на
         головній (autofocus у щойно відкритому вікні не спрацьовує — OK «нікуди» не натискався).
-        focus — що саме виділити першим (інакше — поле вводу чи головна кнопка)."""
+        focus — що саме виділити першим (інакше — поле вводу чи головна кнопка), focus_delay —
+        через скільки секунд."""
         if dlg.on_dismiss is None:
             # закриття вікна — подія; без quiet Flet після неї перевіряв і перемальовував усю
             # сторінку, і головна поверталась на початок
@@ -348,7 +349,7 @@ def main(page: ft.Page, reopen=None):
             next((b for b in reversed(buttons) if isinstance(b, ft.FilledButton)), None) or \
             (buttons[0] if buttons else None)
         if target is not None:
-            page.run_task(focus_later, target)
+            page.run_task(focus_later, target, focus_delay)
 
     def tv_tap(ctrl, action, highlight=None, radius=12, autofocus=False, focus_bg=None):
         """На ПК повертає контейнер як є; на телевізорі — обгортає його у фокусовану кнопку
@@ -409,6 +410,8 @@ def main(page: ft.Page, reopen=None):
                 "volume_boost": "6",  # підсилення гучності, дБ: "0" / "6" / "10"
                 # вигляд розділів за замовчуванням: картки 16:9 чи список
                 "layout": "list" if TV else "grid",
+                # пошук на телевізорі: власна екранна клавіатура чи системна (Gboard тощо)
+                "tv_keyboard": "builtin",
                 # останній вибір субтитрів (мова або ""): окремо для оригінальних доріжок
                 # і для українських (там субтитри — лише написи на екрані)
                 "sub_orig": "", "sub_ua": "",
@@ -466,6 +469,8 @@ def main(page: ft.Page, reopen=None):
                 airplay.CREDENTIALS.update(json.loads(raw))
             if settings["layout"] not in ("grid", "list"):
                 settings["layout"] = "list" if TV else "grid"
+            if settings["tv_keyboard"] not in ("builtin", "system"):
+                settings["tv_keyboard"] = "builtin"
             apply_layout_default()
         except Exception:
             pass
@@ -559,6 +564,30 @@ def main(page: ft.Page, reopen=None):
             if os.environ.get(key):
                 return os.environ[key]
         return None
+
+    async def voice_input(active=lambda: True, timeout=120):
+        """Голосовий ввід (Android): системне розпізнавання мовлення запускає MainActivity
+        (uafixupdate://voice, див. tools/android_template.py) і кладе результат у
+        cache/voice.json з id цього запиту. Повертає (текст, помилка); помилка — "" або
+        "unavailable" (немає сервісу розпізнавання), "nothing" (нічого / скасовано), "timeout".
+        active() == False (вікно пошуку закрили) — більше не чекати."""
+        req = str(time.time_ns())
+        await ft.UrlLauncher().launch_url(f"uafixupdate://voice?id={req}",
+                                          mode=ft.LaunchMode.EXTERNAL_APPLICATION)
+        files = [os.path.join(os.environ[k], "voice.json")
+                 for k in ("FLET_APP_STORAGE_CACHE", "FLET_APP_STORAGE_TEMP") if os.environ.get(k)]
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and active():
+            await asyncio.sleep(0.3)
+            for path in files:
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        data = json.load(f)
+                except (OSError, ValueError):
+                    continue
+                if data.get("id") == req:  # відповідь саме на цей запит, а не попередній
+                    return data.get("text", ""), data.get("error", "")
+        return "", "timeout"
 
     async def download_and_install(url, version):
         desktop = platform_name in ("macos", "windows")
@@ -1746,22 +1775,27 @@ def main(page: ft.Page, reopen=None):
     elif TV:
         # Поле вводу на телевізорі «захоплює» стрілки пульта — з нього не вийти. Тому тут
         # кнопка, а текст вводиться у вікні (його закриває «Назад»).
-        # Набір — власною екранною клавіатурою: на багатьох приставках пульт система вважає
-        # фізичною клавіатурою, і тоді жодна клавіатура Android (Gboard тощо) себе не показує,
-        # лише пропонує «скористатися фізичною». Поле лишається — для справжньої фізичної
-        # клавіатури (і системної, де вона з'являється): на нього — стрілкою вгору.
-        # розкладки — як на звичайній клавіатурі (ЙЦУКЕН / QWERTY), рядок за рядком
+        # Набір — на вибір у налаштуваннях (tv_keyboard): власною екранною клавіатурою
+        # (пультом; працює на будь-якій приставці) чи системною (Gboard тощо — з'являється,
+        # коли поле отримує фокус). Праворуч від поля — мікрофон (голосовий ввід, Android).
+        # Розкладки вбудованої — як на звичайній клавіатурі (ЙЦУКЕН / QWERTY), рядок за рядком
         TV_KEY_ROWS = {"uk": ["йцукенгшщзхї", "фівапролджє'", "ґячсмитьбю.-"],
                        "en": ["qwertyuiop'-", "asdfghjkl:", "zxcvbnm.&!"]}
         TV_KEY_COLS, TV_KEY_W, TV_KEY_H, TV_KEY_GAP = 12, 41, 40, 6
         tv_key_lang = ["uk"]  # остання розкладка — на наступне відкриття пошуку
 
         def open_tv_search(e):
+            system_kb = settings["tv_keyboard"] == "system"
+            alive = [True]  # вікно ще відкрите (голосовий ввід відповідає не одразу)
+
             def submit(e=None):
                 q = field.value
                 page.pop_dialog()
                 page.run_task(do_search, q)
 
+            # мікрофон — лише на Android (розпізнавання — системне, через MainActivity)
+            mic_w = 56 if is_android else 0
+            full_w = TV_KEY_COLS * TV_KEY_W + (TV_KEY_COLS - 1) * TV_KEY_GAP
             field = ft.TextField(value=search.value, hint_text="Назва фільму або серіалу",
                                  prefix_icon=ft.Icons.SEARCH_ROUNDED,
                                  text_size=20, filled=True, fill_color=SURFACE_2, cursor_color=ACCENT,
@@ -1769,8 +1803,42 @@ def main(page: ft.Page, reopen=None):
                                              border_radius=12, side=ft.BorderSide(2, ACCENT)),
                                          ft.ControlState.DEFAULT: ft.OutlineInputBorder(
                                              border_radius=12, side=ft.BorderSide(1, BORDER))},
-                                 width=TV_KEY_COLS * TV_KEY_W + (TV_KEY_COLS - 1) * TV_KEY_GAP,
-                                 on_submit=submit)
+                                 width=full_w - (mic_w + 10 if mic_w else 0), on_submit=submit)
+            status = ft.Text("", color=MUTED, size=15, visible=False)
+
+            def set_status(text):
+                quiet()
+                status.value, status.visible = text, bool(text)
+                status.update()
+
+            async def listen():
+                if st.get("voice_busy"):
+                    return
+                st["voice_busy"] = True
+                try:
+                    set_status("Говоріть — українською чи англійською…")
+                    text, error = await voice_input(active=lambda: alive[0])
+                finally:
+                    st["voice_busy"] = False
+                if not alive[0]:
+                    return
+                if text:
+                    field.value = text
+                    submit()
+                    return
+                set_status({"unavailable": "Голосовий ввід недоступний: на приставці немає "
+                                           "сервісу розпізнавання мовлення",
+                            "nothing": "Нічого не розпізнано — спробуйте ще раз"}.get(
+                    error, "Голосовий ввід не відповів — спробуйте ще раз"))
+
+            mic = ft.IconButton(
+                ft.Icons.MIC_ROUNDED, tooltip="Голосовий пошук", icon_size=26,
+                width=mic_w, height=mic_w, on_click=lambda e: (quiet(), page.run_task(listen)),
+                style=ft.ButtonStyle(
+                    bgcolor={ft.ControlState.FOCUSED: TV_FOCUS_BG,
+                             ft.ControlState.DEFAULT: SURFACE_2},
+                    icon_color=ACCENT, side=TV_FOCUS_SIDE,
+                    shape=ft.RoundedRectangleBorder(radius=12))) if mic_w else None
 
             def set_text(value):
                 quiet()
@@ -1845,22 +1913,34 @@ def main(page: ft.Page, reopen=None):
                                      style=ft.ButtonStyle(bgcolor=ACCENT, color="#FFFFFF",
                                                           icon_color="#FFFFFF",
                                                           side=TV_FOCUS_SIDE))
-            # поле вводу «з'їдає» стрілку вниз — переводимо фокус самі (див. on_key)
-            st["tv_search_down"] = letters[0][0]
+            # поле вводу «з'їдає» стрілки вниз і вправо — переводимо фокус самі (див. on_key)
+            st["tv_search_down"] = (tv_recent or [go_btn])[0] if system_kb else letters[0][0]
+            st["tv_search_right"] = mic
             field.on_focus = lambda e: (quiet(), st.update(tv_search_field=True))
             field.on_blur = lambda e: (quiet(), st.update(tv_search_field=False))
+
+            def dismissed(e):
+                quiet()
+                alive[0] = False
+
+            # системна клавіатура: фокус у поле — пізніше, ніж зазвичай. Коли поле отримувало
+            # його одразу (ще під час натискання «OK» на «Пошуку»), клавіатура не з'являлась,
+            # а прийшовши в поле пізніше стрілкою — з'являлась
+            first, first_delay = (field, 0.8) if system_kb else (letters[0][0], 0.35)
             show_dialog(ft.AlertDialog(
                 bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
                 scrollable=True,  # запас на малі екрани: фокус сам прокручує до кнопки
-                content=ft.Column([field, keyboard] + (
-                    [ft.Text("Нещодавні", color=MUTED, size=16),
-                     ft.Row(tv_recent, spacing=10, scroll=ft.ScrollMode.HIDDEN,
-                            width=field.width)]
-                    if tv_recent else []), tight=True, spacing=14),
+                on_dismiss=dismissed,
+                content=ft.Column(
+                    [ft.Row([field] + ([mic] if mic else []), spacing=10), status] +
+                    ([] if system_kb else [keyboard]) + (
+                        [ft.Text("Нещодавні", color=MUTED, size=16),
+                         ft.Row(tv_recent, spacing=10, scroll=ft.ScrollMode.HIDDEN, width=full_w)]
+                        if tv_recent else []), tight=True, spacing=14),
                 actions=[ft.TextButton("Скасувати", on_click=lambda e: page.pop_dialog(),
                                        style=ft.ButtonStyle(color=MUTED)),
                          go_btn],
-            ), focus=letters[0][0])
+            ), focus=first, focus_delay=first_delay)
 
         def search_focus(on):
             quiet()
@@ -3201,7 +3281,8 @@ def main(page: ft.Page, reopen=None):
                                 size=15, weight=ft.FontWeight.W_600)  # колір — від рядка
                 title = {"sub_scale": "Розмір субтитрів", "quality": "Якість відео",
                          "fit": "Масштаб на весь екран", "volume_boost": "Гучність",
-                         "layout": "Вигляд розділів"}.get(key, "")
+                         "layout": "Вигляд розділів",
+                         "tv_keyboard": "Клавіатура для пошуку"}.get(key, "")
 
                 def on_pick(value):
                     save_setting(key, float(value) if key == "sub_scale" else value)
@@ -3274,7 +3355,8 @@ def main(page: ft.Page, reopen=None):
             for key, value in (("sub_scale", 1.0), ("fit", "auto"), ("quality", "1080"),
                                ("auto_fullscreen", True), ("volume_boost", "6"),
                                ("auto_updates", True),
-                               ("keep_history", True), ("skipped_version", "")):
+                               ("keep_history", True), ("skipped_version", ""),
+                               ("tv_keyboard", "builtin")):
                 save_setting(key, value)
             for key, value in appearance.DEFAULTS.items():
                 appearance.save(key, value)
@@ -3562,6 +3644,12 @@ def main(page: ft.Page, reopen=None):
                 row(ft.Icons.GRID_VIEW_ROUNDED, "Вигляд розділів", "Картки чи список",
                     trailing=choice("layout", [("Картки", "grid"), ("Список", "list")],
                                     on_set=apply_layout_default)),
+                *([row(ft.Icons.KEYBOARD_ROUNDED, "Клавіатура для пошуку",
+                       "Вбудована — пультом у вікні пошуку; системна — Gboard чи інша "
+                       "встановлена",
+                       trailing=choice("tv_keyboard", [("Вбудована", "builtin"),
+                                                       ("Системна", "system")]))]
+                  if TV else []),
                 *([icon_row(row)] if icon_where() else []),
             ]), section("", [
                 row(icon, title, subtitle,
@@ -4197,8 +4285,8 @@ def main(page: ft.Page, reopen=None):
         elif autoplay:  # «Дивитись» з банера — одразу вмикаємо
             page.run_task(play_episode, ctx, ctx["season"], 0)
 
-    async def focus_later(control):
-        await asyncio.sleep(0.35)  # після того, як кнопку ввімкнено (чи закрито вікно)
+    async def focus_later(control, delay=0.35):
+        await asyncio.sleep(delay)  # після того, як кнопку ввімкнено (чи закрито вікно)
         try:
             await control.focus()
         except Exception as ex:
@@ -6285,6 +6373,10 @@ def main(page: ft.Page, reopen=None):
         if TV and e.key == "Arrow Down" and st.get("tv_search_field") and st.get("tv_search_down"):
             st["tv_search_field"] = False
             await st["tv_search_down"].focus()  # одразу: поле стрілку вже «з'їло»
+            return
+        if TV and e.key == "Arrow Right" and st.get("tv_search_field") and st.get("tv_search_right"):
+            st["tv_search_field"] = False
+            await st["tv_search_right"].focus()  # мікрофон праворуч від поля
             return
         if TV and e.key == "Arrow Down" and st.get("search_focused") and len(page.views) == 1:
             try:

@@ -8,7 +8,8 @@ Flet потрібної версії й замінює MainActivity: та оби
 MainActivity також тримає MulticastLock — для пошуку Chromecast у Wi-Fi.
 
 Також MainActivity відкриває системне вікно встановлення для завантаженого застосунком
-оновлення (посилання uafixupdate://install, файл cache/update.apk).
+оновлення (посилання uafixupdate://install, файл cache/update.apk) і запускає голосовий ввід
+(uafixupdate://voice?id=…, розпізнаний текст — у cache/voice.json).
 
 Використання (CI):  python tools/android_template.py <тека>  →  flet build apk --template <тека>/build
 """
@@ -28,6 +29,7 @@ MAIN_ACTIVITY = '''package {{ cookiecutter.org_name_2 }}.{{ cookiecutter.package
 import android.app.AlarmManager
 import android.app.PendingIntent
 import android.app.PictureInPictureParams
+import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.pm.PackageManager
 import android.util.Rational
@@ -39,15 +41,19 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.speech.RecognizerIntent
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterFragmentActivity
 import java.io.File
+import org.json.JSONObject
 
 class MainActivity : FlutterFragmentActivity() {
     private var multicastLock: WifiManager.MulticastLock? = null
     /** «Картинка в картинці»: дозволено, поки відкритий плеєр (вмикає Python-частина
      *  посиланням uafixupdate://pip?on=1 / on=0). */
     private var pipAllowed = false
+    /** Голосовий пошук: id запиту Python-частини (результат повертається з ним, див. writeVoice). */
+    private var voiceId: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -177,6 +183,10 @@ class MainActivity : FlutterFragmentActivity() {
             setIcon(data.getQueryParameter("name") ?: "classic")
             return true
         }
+        if (data.host == "voice") {  // кнопка мікрофона в пошуку
+            startVoice(data.getQueryParameter("id") ?: "")
+            return true
+        }
         // update.apk кладе Python-частина в кеш (запасні варіанти — дані застосунку)
         val apk = listOf(cacheDir, filesDir)
             .map { File(it, "update.apk") }.firstOrNull { it.isFile } ?: return true
@@ -200,6 +210,62 @@ class MainActivity : FlutterFragmentActivity() {
         } catch (e: Exception) {
         }
         return true
+    }
+
+    /**
+     * Голосовий ввід — системним сервісом розпізнавання (Google): українська, а англійська —
+     * додатковою мовою, тож сервіс сам визначає, якою з них сказано. Мікрофон бере сам сервіс
+     * (зокрема мікрофон пульта), дозвіл на запис застосунку не потрібен.
+     */
+    @Suppress("DEPRECATION")
+    private fun startVoice(id: String) {
+        voiceId = id
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "uk-UA")
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "uk-UA")
+            // додаткові мови сервісу Google (давно, неофіційно) і стандартне автовизначення
+            // мови (Android 14+; рядками — щоб не залежати від версії SDK)
+            putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf("en-US"))
+            putExtra("android.speech.extra.ENABLE_LANGUAGE_DETECTION", true)
+            putStringArrayListExtra("android.speech.extra.LANGUAGE_DETECTION_ALLOWED_LANGUAGES",
+                                    arrayListOf("uk-UA", "en-US"))
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Назва фільму або серіалу")
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        }
+        try {
+            startActivityForResult(intent, VOICE_REQUEST)
+        } catch (e: ActivityNotFoundException) {
+            writeVoice(id, "", "unavailable")  // на пристрої немає сервісу розпізнавання
+        } catch (e: Exception) {
+            writeVoice(id, "", "error")
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != VOICE_REQUEST) return
+        val id = voiceId ?: return
+        voiceId = null
+        val text = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull()?.trim() ?: ""
+        writeVoice(id, text, if (resultCode == RESULT_OK && text.isNotEmpty()) "" else "nothing")
+    }
+
+    /** Результат для Python-частини: cache/voice.json (там же, де update.apk), через тимчасовий
+     *  файл — щоб Python не прочитав його недописаним. */
+    private fun writeVoice(id: String, text: String, error: String) {
+        try {
+            val tmp = File(cacheDir, "voice.json.tmp")
+            tmp.writeText(JSONObject().put("id", id).put("text", text).put("error", error).toString())
+            tmp.renameTo(File(cacheDir, "voice.json"))
+        } catch (e: Exception) {
+        }
+    }
+
+    companion object {
+        private const val VOICE_REQUEST = 7301
     }
 }
 '''
