@@ -816,9 +816,10 @@ def main(page: ft.Page, reopen=None):
             render_continue(focus=False)
             if len(page.views) == 1 and st["mode"] == ("cat", HISTORY_PATH):
                 page.run_task(reload)
-        if favorites_signature() != before[1] and len(page.views) == 1 and \
-                st["mode"] == ("cat", FAV_PATH):
-            page.run_task(reload)
+        if favorites_signature() != before[1]:
+            render_fav_home()
+            if len(page.views) == 1 and st["mode"] == ("cat", FAV_PATH):
+                page.run_task(reload)
 
     def continue_signature():
         return [(h["url"], h.get("pos"), h.get("label")) for h in history
@@ -2848,9 +2849,10 @@ def main(page: ft.Page, reopen=None):
                 continue_section.update()
             except Exception:
                 pass
+            render_fav_home()  # обране могли змінити на сторінці фільму
             # фокус — на перший пункт (autofocus у вже показаному екрані не спрацьовує,
             # і після повернення назад фокус губився)
-            target = cards[0] if cards else (tv_first_tile[0] if tv_first_tile else None)
+            target = cards[0] if cards else (fav_home_row.controls or tv_first_tile or [None])[0]
             if focus and target is not None and len(page.views) <= 1 and st["mode"][0] == "home":
                 page.run_task(focus_later, target)
             return
@@ -2909,6 +2911,30 @@ def main(page: ft.Page, reopen=None):
             ], spacing=12))
         return ft.Container(ft.Column(blocks, spacing=28),
                             padding=ft.Padding.only(left=side, right=side, top=8))
+
+    # ── TV: останні 4 з Обраного — плитками між «Продовжити перегляд» і розділами
+    FAV_HOME_COUNT = 4
+    fav_home_row = ft.Row(spacing=16)
+    fav_home_section = ft.Container(ft.Column([
+        ft.Text("Останнє в обраному", size=22, weight=ft.FontWeight.W_800, color=TEXT),
+        fav_home_row,
+    ], spacing=12), padding=ft.Padding.only(left=side, right=side), visible=False)
+
+    def render_fav_home():
+        if not TV:
+            return
+        items = active_favorites()[:FAV_HOME_COUNT]
+        # 4 в ряд на всю ширину вмісту головної (смужки біля країв — по 2, відступи — side)
+        avail = (page.width or 960) - 4 - 2 * side
+        w = int((avail - 16 * (FAV_HOME_COUNT - 1)) / FAV_HOME_COUNT) - 1
+        fav_home_row.controls = [
+            grid_card({k: f.get(k, "") for k in ("url", "title", "orig", "poster", "age")}, tv_w=w)
+            for f in items]
+        fav_home_section.visible = bool(items)
+        try:
+            fav_home_section.update()
+        except Exception:
+            pass  # головна ще не на екрані
 
     # ── нові серії серіалів з Обраного (звіряємо з розділом сайту «Нові серії»)
     fav_new_box = ft.Column(spacing=10) if TV else ft.ListView(
@@ -2988,7 +3014,8 @@ def main(page: ft.Page, reopen=None):
             pull["busy"] = False
 
     home_content = ft.ListView(
-        [continue_section, fav_new_section, tv_sections(), ft.Container(height=120)] if TV else
+        [continue_section, fav_home_section, fav_new_section, tv_sections(),
+         ft.Container(height=120)] if TV else
         [*([refresh_ring] if is_mobile else []), banner_swipe, continue_section,
          fav_new_section, *[col for col, _ in shelves], ft.Container(height=40)],
         expand=True, spacing=18 if not TV else 28,
@@ -5336,7 +5363,8 @@ def main(page: ft.Page, reopen=None):
             # Телевізор: власна панель поверх відео замість вбудованої. У вбудованої таймлайн
             # не отримує фокус з пульта (перемотувати можна було лише кнопками), а сама панель
             # не ховається від натискань пульта. Тут: ↑/↓ — між таймлайном і кнопками,
-            # на таймлайні ←/→ — перемотка (що довше тримати, то більший крок), OK — пауза.
+            # на таймлайні ←/→ — перемотка (що довше тримати, то більший крок), OK — пауза;
+            # при схованій панелі ←/→ одразу перемотують (і показують панель з таймлайном).
             def tv_btn(icon, tooltip, action, autofocus=False):
                 return ft.IconButton(icon, icon_size=34, icon_color="#FFFFFF", tooltip=tooltip,
                                      autofocus=autofocus, on_click=action,
@@ -5418,15 +5446,19 @@ def main(page: ft.Page, reopen=None):
                 tv_bar.value = shown_pos / dur if dur else None
                 tv_time.value = f"{fmt_time(shown_pos)} / {fmt_time(dur)}" if dur else fmt_time(shown_pos)
 
+            async def refresh_pos():
+                """Позиція й тривалість — із плеєра (поки панель схована, tv_poll їх не оновлює)."""
+                try:
+                    pos = (await video.get_current_position()).in_milliseconds / 1000
+                    dur = (await video.get_duration()).in_milliseconds / 1000
+                    p["pos"], p["dur"], p["pos_stale"] = pos, dur, False
+                except Exception:
+                    pass
+
             async def tv_poll():
                 while alive():
                     if p["shown"]:
-                        try:
-                            pos = (await video.get_current_position()).in_milliseconds / 1000
-                            dur = (await video.get_duration()).in_milliseconds / 1000
-                            p["pos"], p["dur"] = pos, dur
-                        except Exception:
-                            pass
+                        await refresh_pos()
                         render_time()
                         try:
                             tv_overlay.update()
@@ -5434,8 +5466,8 @@ def main(page: ft.Page, reopen=None):
                             pass
                     await asyncio.sleep(1)
 
-            async def apply_seek(token):
-                await asyncio.sleep(0.8)  # чекаємо, поки перестануть натискати
+            async def apply_seek(token, delay=0.8):
+                await asyncio.sleep(delay)  # чекаємо, поки перестануть натискати
                 if p.get("seek_token") != token or p.get("seek_target") is None:
                     return
                 target, p["seek_target"] = p["seek_target"], None
@@ -5448,16 +5480,9 @@ def main(page: ft.Page, reopen=None):
                 except Exception:
                     pass
 
-            async def tv_key(key):
-                """Стрілки на таймлайні — перемотка (повертає True, якщо натискання оброблено)."""
-                if not p.get("timeline_focus") or key not in ("Arrow Left", "Arrow Right"):
-                    return False
-                now_t = time.monotonic()
-                p["seek_streak"] = p.get("seek_streak", 0) + 1 \
-                    if now_t - p.get("seek_last", 0) < 0.6 else 0
-                p["seek_last"] = now_t
-                streak = p["seek_streak"]
-                step = 10 if streak < 4 else 30 if streak < 10 else 60
+            def seek_step(key, step):
+                """Крок перемотки ←/→: одразу — позиція на таймлайні, у плеєр — трохи згодом
+                (apply_seek), щоб кілька кроків склались в одну перемотку."""
                 base = p["seek_target"] if p.get("seek_target") is not None else p.get("pos", 0)
                 dur = p.get("dur") or 0
                 target = base + (step if key == "Arrow Right" else -step)
@@ -5469,9 +5494,53 @@ def main(page: ft.Page, reopen=None):
                 tv_overlay.update()
                 p["seek_token"] = p.get("seek_token", 0) + 1
                 page.run_task(apply_seek, p["seek_token"])
+
+            async def tv_key(key):
+                """Стрілки на таймлайні — перемотка (повертає True, якщо натискання оброблено)."""
+                if key == "Arrow Up" and p.get("timeline_focus"):
+                    # таймлайн — найвищий на панелі; без цього «вгору» забирав фокус на
+                    # KeyboardListener плеєра (його область — увесь екран), і фокус губився
+                    page.run_task(focus_later, timeline, 0.05)
+                    return True
+                if not p.get("timeline_focus") or key not in ("Arrow Left", "Arrow Right"):
+                    return False
+                if p.get("pos_stale") and p.get("seek_target") is None:
+                    await refresh_pos()  # панель щойно з'явилась — позиція могла застаріти
+                now_t = time.monotonic()
+                p["seek_streak"] = p.get("seek_streak", 0) + 1 \
+                    if now_t - p.get("seek_last", 0) < 0.6 else 0
+                p["seek_last"] = now_t
+                streak = p["seek_streak"]
+                seek_step(key, 10 if streak < 4 else 30 if streak < 10 else 60)
                 return True
 
             st["tv_key"] = tv_key
+
+            def tv_hold(e):
+                """Затиснута ←/→ на таймлайні — перемотка з кроком, що росте з часом утримання
+                (як на YouTube). Повтори клавіші дає лише KeyboardListener: загальний обробник
+                клавіш Flet (page.on_keyboard_event) передає тільки перше натискання."""
+                quiet()
+                if e.key not in ("Arrow Left", "Arrow Right") or not p.get("timeline_focus"):
+                    return
+                now_t = time.monotonic()
+                if p.get("hold_key") != e.key:
+                    p["hold_key"], p["hold_start"], p["hold_tick"] = e.key, now_t, 0.0
+                if now_t - p["hold_tick"] < 0.2:  # повтори — ~20 за секунду, кроки — ~5
+                    return
+                p["hold_tick"] = now_t
+                held = now_t - p["hold_start"]
+                seek_step(e.key, 10 if held < 1.5 else 30 if held < 3 else 60 if held < 5 else 120)
+                tv_activity()  # панель не ховається, поки тримають
+
+            def tv_release(e):
+                quiet()
+                if e.key != p.get("hold_key"):
+                    return
+                p["hold_key"] = None
+                if p.get("seek_target") is not None:  # відпустили — перемотати одразу
+                    p["seek_token"] = p.get("seek_token", 0) + 1
+                    page.run_task(apply_seek, p["seek_token"], 0)
 
             # Панель ховається через 5 с без натискань (якщо не на паузі й не перемотуємо),
             # будь-яка кнопка пульта показує її знову.
@@ -5479,12 +5548,17 @@ def main(page: ft.Page, reopen=None):
 
             def hide_panel():
                 p["shown"] = False
+                p["pos_stale"] = True  # tv_poll з схованою панеллю позицію не оновлює
                 # схована панель втрачає фокус, а on_blur при цьому не приходить
                 p["timeline_focus"] = False
                 timeline_box.border = ft.Border.all(3, ft.Colors.TRANSPARENT)
                 tv_bar.bar_height, tv_hint.value = 8, ""
                 tv_overlay.visible = False
                 tv_overlay.update()
+                if p.get("keys") is not None:
+                    # фокус — на KeyboardListener плеєра: інакше нікому отримувати повтори
+                    # затиснутої ←/→ (перемотка утриманням одразу з схованою панеллю)
+                    page.run_task(p["keys"].focus)
 
             async def hide_later(token):
                 await asyncio.sleep(5)
@@ -5508,13 +5582,19 @@ def main(page: ft.Page, reopen=None):
 
             st["tv_back"] = tv_back
 
-            def tv_activity():
+            def tv_activity(key=None):
                 if not p["shown"]:
                     p["shown"] = True
                     tv_overlay.visible = True
                     render_time()
                     tv_overlay.update()
-                    if not p.get("next_shown"):  # інакше фокус — на «Наступна серія»
+                    if key in ("Arrow Left", "Arrow Right"):
+                        # ←/→ при схованій панелі — одразу перемотка: фокус — на таймлайн
+                        # (позначка — вже зараз: перемотує саме це натискання, а фокус прийде
+                        # трохи згодом)
+                        p["timeline_focus"] = True
+                        page.run_task(focus_later, timeline, 0.1)
+                    elif not p.get("next_shown"):  # інакше фокус — на «Наступна серія»
                         page.run_task(focus_later, play_pause)
                 p["hide_token"] += 1
                 page.run_task(hide_later, p["hide_token"])
@@ -5975,7 +6055,11 @@ def main(page: ft.Page, reopen=None):
                         pass
 
             page.run_task(focus_player)
-            return ft.Stack([video, tv_overlay, next_card], expand=True)  # «Назад» — кнопкою пульта
+            # KeyboardListener — заради повторів затиснутої клавіші (перемотка утриманням, tv_hold)
+            p["keys"] = ft.KeyboardListener(
+                ft.Stack([video, tv_overlay, next_card], expand=True),  # «Назад» — кнопкою пульта
+                on_key_repeat=tv_hold, on_key_up=tv_release, expand=True)
+            return p["keys"]
         if is_mobile:
             # телефон: без назви й стрілки над відео — назад системним жестом / кнопкою
             return ft.Stack([video, next_card], expand=True)
@@ -6423,7 +6507,7 @@ def main(page: ft.Page, reopen=None):
                 pass
         if TV and page.views and page.views[-1].route == "/play":
             if st.get("tv_activity") and e.key not in BACK_KEYS and e.key not in QUIET_KEYS:
-                st["tv_activity"]()  # кнопка пульта (крім «Назад» і гучності) показує панель
+                st["tv_activity"](e.key)  # кнопка пульта (крім «Назад» і гучності) показує панель
             if st.get("tv_key") and await st["tv_key"](e.key):
                 return
             if e.key in ("Media Play Pause", "Media Play", "Media Pause") and st.get("play_pause"):
