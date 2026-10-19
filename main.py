@@ -306,9 +306,10 @@ def main(page: ft.Page, reopen=None):
     PLAYER_FOCUS_SIDE = {ft.ControlState.FOCUSED: ft.BorderSide(4, "#FFFFFF"),
                          ft.ControlState.DEFAULT: ft.BorderSide(0, ft.Colors.TRANSPARENT)}
 
-    def show_dialog(dlg):
+    def show_dialog(dlg, focus=None):
         """page.show_dialog + на телевізорі: біла рамка фокуса на кнопках вікна й фокус на
-        головній (autofocus у щойно відкритому вікні не спрацьовує — OK «нікуди» не натискався)."""
+        головній (autofocus у щойно відкритому вікні не спрацьовує — OK «нікуди» не натискався).
+        focus — що саме виділити першим (інакше — поле вводу чи головна кнопка)."""
         if dlg.on_dismiss is None:
             # закриття вікна — подія; без quiet Flet після неї перевіряв і перемальовував усю
             # сторінку, і головна поверталась на початок
@@ -342,7 +343,7 @@ def main(page: ft.Page, reopen=None):
             b.style.side = TV_FOCUS_SIDE
         page.show_dialog(dlg)  # після стилів: інакше зміни вже не дійдуть до екрана
         # поле вводу (пошук) — першим: фокус на ньому відкриває клавіатуру телевізора
-        target = next((f for f in fields if f.autofocus), None) or \
+        target = focus or next((f for f in fields if f.autofocus), None) or \
             next((b for b in buttons if getattr(b, "autofocus", False)), None) or \
             next((b for b in reversed(buttons) if isinstance(b, ft.FilledButton)), None) or \
             (buttons[0] if buttons else None)
@@ -1745,24 +1746,92 @@ def main(page: ft.Page, reopen=None):
     elif TV:
         # Поле вводу на телевізорі «захоплює» стрілки пульта — з нього не вийти. Тому тут
         # кнопка, а текст вводиться у вікні (його закриває «Назад»).
+        # Набір — власною екранною клавіатурою: на багатьох приставках пульт система вважає
+        # фізичною клавіатурою, і тоді жодна клавіатура Android (Gboard тощо) себе не показує,
+        # лише пропонує «скористатися фізичною». Поле лишається — для справжньої фізичної
+        # клавіатури (і системної, де вона з'являється): на нього — стрілкою вгору.
+        # розкладки — як на звичайній клавіатурі (ЙЦУКЕН / QWERTY), рядок за рядком
+        TV_KEY_ROWS = {"uk": ["йцукенгшщзхї", "фівапролджє'", "ґячсмитьбю.-"],
+                       "en": ["qwertyuiop'-", "asdfghjkl:", "zxcvbnm.&!"]}
+        TV_KEY_COLS, TV_KEY_W, TV_KEY_H, TV_KEY_GAP = 12, 41, 40, 6
+        tv_key_lang = ["uk"]  # остання розкладка — на наступне відкриття пошуку
+
         def open_tv_search(e):
             def submit(e=None):
                 q = field.value
                 page.pop_dialog()
                 page.run_task(do_search, q)
 
-            field = ft.TextField(value=search.value, autofocus=True, hint_text="Назва фільму або серіалу",
+            field = ft.TextField(value=search.value, hint_text="Назва фільму або серіалу",
+                                 prefix_icon=ft.Icons.SEARCH_ROUNDED,
                                  text_size=20, filled=True, fill_color=SURFACE_2, cursor_color=ACCENT,
                                  border={ft.ControlState.FOCUSED: ft.OutlineInputBorder(
                                              border_radius=12, side=ft.BorderSide(2, ACCENT)),
                                          ft.ControlState.DEFAULT: ft.OutlineInputBorder(
                                              border_radius=12, side=ft.BorderSide(1, BORDER))},
-                                 width=560, on_submit=submit)
+                                 width=TV_KEY_COLS * TV_KEY_W + (TV_KEY_COLS - 1) * TV_KEY_GAP,
+                                 on_submit=submit)
+
+            def set_text(value):
+                quiet()
+                field.value = value
+                field.update()
+
+            def type_key(e):
+                text = field.value or ""
+                if e.control.data == " " and (not text or text.endswith(" ")):
+                    return quiet()
+                set_text(text + e.control.data)
+
+            def key(label, data=None, cols=1, on_click=type_key, icon=None):
+                return ft.Button(
+                    label, data=data if data is not None else label, icon=icon,
+                    on_click=on_click,
+                    width=cols * TV_KEY_W + (cols - 1) * TV_KEY_GAP, height=TV_KEY_H,
+                    style=ft.ButtonStyle(
+                        bgcolor={ft.ControlState.FOCUSED: TV_FOCUS_BG,
+                                 ft.ControlState.DEFAULT: SURFACE_2},
+                        color=TV_FOCUS_TEXT, icon_color=TV_FOCUS_TEXT, side=TV_FOCUS_SIDE,
+                        elevation=0, padding=0, shape=ft.RoundedRectangleBorder(radius=8),
+                        text_style=ft.TextStyle(size=18, weight=ft.FontWeight.W_600)))
+
+            # літери — одні й ті самі кнопки для обох розкладок (перемикання лише міняє
+            # підписи, тож фокус лишається на місці)
+            letters = [[key("") for _ in range(max(len(rows[r]) for rows in TV_KEY_ROWS.values()))]
+                       for r in range(len(TV_KEY_ROWS["uk"]))]
+
+            def show_layout():
+                for row, chars in zip(letters, TV_KEY_ROWS[tv_key_lang[0]]):
+                    for i, b in enumerate(row):
+                        b.visible = i < len(chars)
+                        b.content = b.data = chars[i] if b.visible else ""
+                lang_key.content = "ABC" if tv_key_lang[0] == "uk" else "АБВ"
+
+            def switch_layout(e):
+                tv_key_lang[0] = "en" if tv_key_lang[0] == "uk" else "uk"
+                show_layout()
+                quiet()
+                keyboard.update()
+
+            lang_key = key("", cols=2, on_click=switch_layout)
+            show_layout()
+            keyboard = ft.Column(
+                [ft.Row(row, spacing=TV_KEY_GAP) for row in letters] +
+                [ft.Row([key(d) for d in "1234567890"], spacing=TV_KEY_GAP),
+                 ft.Row([lang_key,
+                         key("Пробіл", " ", cols=5, icon=ft.Icons.SPACE_BAR_ROUNDED),
+                         key(None, cols=2, icon=ft.Icons.BACKSPACE_OUTLINED,
+                             on_click=lambda e: set_text((field.value or "")[:-1])),
+                         key("Очистити", cols=3, on_click=lambda e: set_text(""))],
+                        spacing=TV_KEY_GAP)],
+                spacing=TV_KEY_GAP, tight=True)
+
             def tv_pick(q):
                 page.pop_dialog()
                 page.run_task(do_search, q)
 
-            # нещодавні — кнопками: їх можна вибрати пультом (Chip фокус програмно не бере)
+            # нещодавні — кнопками: їх можна вибрати пультом (Chip фокус програмно не бере);
+            # одним рядком із прокруткою — щоб вікно з клавіатурою вміщалося на екрані
             tv_recent = [ft.Button(
                 q, icon=ft.Icons.HISTORY_ROUNDED, on_click=lambda e, q=q: tv_pick(q),
                 style=ft.ButtonStyle(
@@ -1777,21 +1846,21 @@ def main(page: ft.Page, reopen=None):
                                                           icon_color="#FFFFFF",
                                                           side=TV_FOCUS_SIDE))
             # поле вводу «з'їдає» стрілку вниз — переводимо фокус самі (див. on_key)
-            st["tv_search_down"] = (tv_recent or [go_btn])[0]
+            st["tv_search_down"] = letters[0][0]
             field.on_focus = lambda e: (quiet(), st.update(tv_search_field=True))
             field.on_blur = lambda e: (quiet(), st.update(tv_search_field=False))
             show_dialog(ft.AlertDialog(
-                title=ft.Text("Пошук", size=24, weight=ft.FontWeight.W_800),
                 bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
-                content=ft.Column([field] + ([ft.Text("Нещодавні", color=MUTED, size=16),
-                                              ft.Row(tv_recent, wrap=True, spacing=10,
-                                                     run_spacing=10, width=560)]
-                                             if tv_recent else []),
-                                  tight=True, spacing=14),
+                scrollable=True,  # запас на малі екрани: фокус сам прокручує до кнопки
+                content=ft.Column([field, keyboard] + (
+                    [ft.Text("Нещодавні", color=MUTED, size=16),
+                     ft.Row(tv_recent, spacing=10, scroll=ft.ScrollMode.HIDDEN,
+                            width=field.width)]
+                    if tv_recent else []), tight=True, spacing=14),
                 actions=[ft.TextButton("Скасувати", on_click=lambda e: page.pop_dialog(),
                                        style=ft.ButtonStyle(color=MUTED)),
                          go_btn],
-            ))
+            ), focus=letters[0][0])
 
         def search_focus(on):
             quiet()

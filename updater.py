@@ -8,7 +8,7 @@ import re
 
 import requests
 
-REPO = "minkoroman/uafix-player"
+REPO = "dmytr0/uaplayer"  # форк minkoroman/uafix-player — релізи підписані ключем форка
 API = f"https://api.github.com/repos/{REPO}/releases"
 HEADERS = {"Accept": "application/vnd.github+json", "User-Agent": "UAFix-Player"}
 
