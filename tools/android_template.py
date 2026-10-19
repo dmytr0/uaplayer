@@ -9,7 +9,7 @@ MainActivity також тримає MulticastLock — для пошуку Chrom
 
 Також MainActivity відкриває системне вікно встановлення для завантаженого застосунком
 оновлення (посилання uafixupdate://install, файл cache/update.apk) і запускає голосовий ввід
-(uafixupdate://voice?id=…, розпізнаний текст — у cache/voice.json).
+(uafixupdate://voice?id=…&lang=…, розпізнаний текст — у cache/voice.json).
 
 Використання (CI):  python tools/android_template.py <тека>  →  flet build apk --template <тека>/build
 """
@@ -184,7 +184,7 @@ class MainActivity : FlutterFragmentActivity() {
             return true
         }
         if (data.host == "voice") {  // кнопка мікрофона в пошуку
-            startVoice(data.getQueryParameter("id") ?: "")
+            startVoice(data.getQueryParameter("id") ?: "", data.getQueryParameter("lang") ?: "uk-UA")
             return true
         }
         // update.apk кладе Python-частина в кеш (запасні варіанти — дані застосунку)
@@ -213,23 +213,18 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     /**
-     * Голосовий ввід — системним сервісом розпізнавання (Google): українська, а англійська —
-     * додатковою мовою, тож сервіс сам визначає, якою з них сказано. Мікрофон бере сам сервіс
-     * (зокрема мікрофон пульта), дозвіл на запис застосунку не потрібен.
+     * Голосовий ввід — системним сервісом розпізнавання (Google) мовою lang («uk-UA» / «en-US»,
+     * вибір у вікні пошуку). Автовизначення мови (додаткові мови) сервіс на приставці
+     * плутав — тому мова лише одна, явна. Мікрофон бере сам сервіс (зокрема мікрофон пульта),
+     * дозвіл на запис застосунку не потрібен.
      */
     @Suppress("DEPRECATION")
-    private fun startVoice(id: String) {
+    private fun startVoice(id: String, lang: String) {
         voiceId = id
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "uk-UA")
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "uk-UA")
-            // додаткові мови сервісу Google (давно, неофіційно) і стандартне автовизначення
-            // мови (Android 14+; рядками — щоб не залежати від версії SDK)
-            putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf("en-US"))
-            putExtra("android.speech.extra.ENABLE_LANGUAGE_DETECTION", true)
-            putStringArrayListExtra("android.speech.extra.LANGUAGE_DETECTION_ALLOWED_LANGUAGES",
-                                    arrayListOf("uk-UA", "en-US"))
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, lang)
             putExtra(RecognizerIntent.EXTRA_PROMPT, "Назва фільму або серіалу")
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
         }

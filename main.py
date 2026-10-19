@@ -412,6 +412,7 @@ def main(page: ft.Page, reopen=None):
                 "layout": "list" if TV else "grid",
                 # пошук на телевізорі: власна екранна клавіатура чи системна (Gboard тощо)
                 "tv_keyboard": "builtin",
+                "voice_lang": "uk-UA",  # мова голосового пошуку: "uk-UA" / "en-US"
                 # останній вибір субтитрів (мова або ""): окремо для оригінальних доріжок
                 # і для українських (там субтитри — лише написи на екрані)
                 "sub_orig": "", "sub_ua": "",
@@ -471,6 +472,8 @@ def main(page: ft.Page, reopen=None):
                 settings["layout"] = "list" if TV else "grid"
             if settings["tv_keyboard"] not in ("builtin", "system"):
                 settings["tv_keyboard"] = "builtin"
+            if settings["voice_lang"] not in ("uk-UA", "en-US"):
+                settings["voice_lang"] = "uk-UA"
             apply_layout_default()
         except Exception:
             pass
@@ -565,14 +568,14 @@ def main(page: ft.Page, reopen=None):
                 return os.environ[key]
         return None
 
-    async def voice_input(active=lambda: True, timeout=120):
-        """Голосовий ввід (Android): системне розпізнавання мовлення запускає MainActivity
-        (uafixupdate://voice, див. tools/android_template.py) і кладе результат у
-        cache/voice.json з id цього запиту. Повертає (текст, помилка); помилка — "" або
-        "unavailable" (немає сервісу розпізнавання), "nothing" (нічого / скасовано), "timeout".
-        active() == False (вікно пошуку закрили) — більше не чекати."""
+    async def voice_input(lang, active=lambda: True, timeout=120):
+        """Голосовий ввід (Android) мовою lang ("uk-UA" / "en-US"): системне розпізнавання
+        мовлення запускає MainActivity (uafixupdate://voice, див. tools/android_template.py) і
+        кладе результат у cache/voice.json з id цього запиту. Повертає (текст, помилка);
+        помилка — "" або "unavailable" (немає сервісу розпізнавання), "nothing" (нічого /
+        скасовано), "timeout". active() == False (вікно пошуку закрили) — більше не чекати."""
         req = str(time.time_ns())
-        await ft.UrlLauncher().launch_url(f"uafixupdate://voice?id={req}",
+        await ft.UrlLauncher().launch_url(f"uafixupdate://voice?id={req}&lang={lang}",
                                           mode=ft.LaunchMode.EXTERNAL_APPLICATION)
         files = [os.path.join(os.environ[k], "voice.json")
                  for k in ("FLET_APP_STORAGE_CACHE", "FLET_APP_STORAGE_TEMP") if os.environ.get(k)]
@@ -1789,21 +1792,29 @@ def main(page: ft.Page, reopen=None):
             alive = [True]  # вікно ще відкрите (голосовий ввід відповідає не одразу)
 
             def submit(e=None):
-                q = field.value
+                # «завершення введення» від клавіатури (будь-яка її дія: готово, далі, вихід
+                # стрілкою з Gboard…) теж приходить сюди — з порожнім полем вікно не закривати
+                q = (field.value or "").strip()
+                if not q:
+                    return quiet()
                 page.pop_dialog()
                 page.run_task(do_search, q)
 
-            # мікрофон — лише на Android (розпізнавання — системне, через MainActivity)
-            mic_w = 56 if is_android else 0
+            # мікрофон і мова голосу — лише на Android (розпізнавання — системне, через MainActivity)
+            mic_w, lang_w = (56, 64) if is_android else (0, 0)
             full_w = TV_KEY_COLS * TV_KEY_W + (TV_KEY_COLS - 1) * TV_KEY_GAP
             field = ft.TextField(value=search.value, hint_text="Назва фільму або серіалу",
                                  prefix_icon=ft.Icons.SEARCH_ROUNDED,
+                                 # вбудована клавіатура — без системної (поле — для фізичної)
+                                 keyboard_type=ft.KeyboardType.TEXT if system_kb
+                                 else ft.KeyboardType.NONE,
                                  text_size=20, filled=True, fill_color=SURFACE_2, cursor_color=ACCENT,
                                  border={ft.ControlState.FOCUSED: ft.OutlineInputBorder(
                                              border_radius=12, side=ft.BorderSide(2, ACCENT)),
                                          ft.ControlState.DEFAULT: ft.OutlineInputBorder(
                                              border_radius=12, side=ft.BorderSide(1, BORDER))},
-                                 width=full_w - (mic_w + 10 if mic_w else 0), on_submit=submit)
+                                 width=full_w - (mic_w + lang_w + 20 if mic_w else 0),
+                                 on_submit=submit)
             status = ft.Text("", color=MUTED, size=15, visible=False)
 
             def set_status(text):
@@ -1815,9 +1826,11 @@ def main(page: ft.Page, reopen=None):
                 if st.get("voice_busy"):
                     return
                 st["voice_busy"] = True
+                lang = settings["voice_lang"]
                 try:
-                    set_status("Говоріть — українською чи англійською…")
-                    text, error = await voice_input(active=lambda: alive[0])
+                    set_status("Говоріть українською…" if lang == "uk-UA" else
+                               "Говоріть англійською…")
+                    text, error = await voice_input(lang, active=lambda: alive[0])
                 finally:
                     st["voice_busy"] = False
                 if not alive[0]:
@@ -1839,6 +1852,25 @@ def main(page: ft.Page, reopen=None):
                              ft.ControlState.DEFAULT: SURFACE_2},
                     icon_color=ACCENT, side=TV_FOCUS_SIDE,
                     shape=ft.RoundedRectangleBorder(radius=12))) if mic_w else None
+
+            # мова голосу — вручну (автовизначення сервіс розпізнавання плутав); запам'ятовується
+            VOICE_LANGS = {"uk-UA": "УКР", "en-US": "ENG"}
+
+            def switch_voice_lang(e):
+                save_setting("voice_lang", "en-US" if settings["voice_lang"] == "uk-UA" else "uk-UA")
+                voice_lang.content = VOICE_LANGS[settings["voice_lang"]]
+                quiet()
+                voice_lang.update()
+
+            voice_lang = ft.Button(
+                VOICE_LANGS[settings["voice_lang"]], tooltip="Мова голосового пошуку",
+                width=lang_w, height=mic_w, on_click=switch_voice_lang,
+                style=ft.ButtonStyle(
+                    bgcolor={ft.ControlState.FOCUSED: TV_FOCUS_BG,
+                             ft.ControlState.DEFAULT: SURFACE_2},
+                    color=TV_FOCUS_TEXT, side=TV_FOCUS_SIDE, elevation=0, padding=0,
+                    shape=ft.RoundedRectangleBorder(radius=12),
+                    text_style=ft.TextStyle(size=15, weight=ft.FontWeight.W_700))) if mic_w else None
 
             def set_text(value):
                 quiet()
@@ -1930,9 +1962,10 @@ def main(page: ft.Page, reopen=None):
             show_dialog(ft.AlertDialog(
                 bgcolor=SURFACE_3, shape=ft.RoundedRectangleBorder(radius=18),
                 scrollable=True,  # запас на малі екрани: фокус сам прокручує до кнопки
+                modal=True,  # не закривати кліком повз вікно (аеромиша) — лише «Назад» / кнопки
                 on_dismiss=dismissed,
                 content=ft.Column(
-                    [ft.Row([field] + ([mic] if mic else []), spacing=10), status] +
+                    [ft.Row([field] + ([mic, voice_lang] if mic else []), spacing=10), status] +
                     ([] if system_kb else [keyboard]) + (
                         [ft.Text("Нещодавні", color=MUTED, size=16),
                          ft.Row(tv_recent, spacing=10, scroll=ft.ScrollMode.HIDDEN, width=full_w)]
